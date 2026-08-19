@@ -9,7 +9,7 @@ The analyses cover stream metabolism (GPP, ER and NEP), dissolved inorganic and 
 ```text
 ERW-mesocosm-analysis/
 ├── code/
-│   ├── stream_metabolism.Rmd
+│   ├── stream_metabolism_analysis.Rmd
 │   ├── DIC_analysis.Rmd
 │   ├── DOC_analysis.Rmd
 │   ├── particulate_carbon_analysis.Rmd
