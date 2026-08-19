@@ -9,9 +9,9 @@ output:
     number_sections: true
     code_folding: show
 params:
-  data_file: "/Users/nixl/Documents/IC/dissertation/code/dissoved_oxygen/combined_do_light_data.csv"
-  meso9_file: "/Users/nixl/Documents/IC/dissertation/code/dissoved_oxygen/Meso_9_clean.xlsx"
-  output_dir: "/Users/nixl/Documents/IC/dissertation/code/version_2/metabolism/v_2/results"
+  data_file: "../data/combined_do_light_data.csv"
+  meso9_file: "../data/Meso_9_clean.xlsx"
+  output_dir: "../outputs/metabolism"
 ---
 
 ```{r setup, include=FALSE}
@@ -26,9 +26,9 @@ knitr::opts_chunk$set(
 
 if (!exists("params")) {
   params <- list(
-    data_file  = "/Users/nixl/Documents/IC/dissertation/code/dissoved_oxygen/combined_do_light_data.csv",
-    meso9_file = "/Users/nixl/Documents/IC/dissertation/code/dissoved_oxygen/Meso_9_clean.xlsx",
-    output_dir = "/Users/nixl/Documents/IC/dissertation/code/version_2/metabolism/v_2/results"
+    data_file = "../data/combined_do_light_data.csv",
+    meso9_file = "../data/Meso_9_clean.xlsx",
+    output_dir = "../outputs/metabolism"
   )
 }
 ```
