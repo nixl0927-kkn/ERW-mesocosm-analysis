@@ -70,42 +70,25 @@ options(contrasts = c("contr.treatment", "contr.poly"))
 # 3. Settings
 
 ```{r settings}
-BENTHIC_FILE_CANDIDATES <- c(
-  "benthic_carbon_mass.xlsx",
-  file.path("data", "benthic_carbon_mass.xlsx"),
-  "/Users/nixl/Documents/IC/dissertation/code/carbon/Particulate/data/benthic_carbon_mass.xlsx"
+BENTHIC_FILE <- "../data/benthic_carbon_mass.xlsx"
+PELAGIC_FILE <- "../data/pelagic_carbon_mass.xlsx"
+
+input_files <- c(
+  BENTHIC_FILE,
+  PELAGIC_FILE
 )
 
-PELAGIC_FILE_CANDIDATES <- c(
-  "pelagic_carbon_mass.xlsx",
-  file.path("data", "pelagic_carbon_mass.xlsx"),
-  "/Users/nixl/Documents/IC/dissertation/code/carbon/Particulate/data/pelagic_carbon_mass.xlsx"
-)
-
-find_first_file <- function(candidates, label) {
-  found <- candidates[file.exists(candidates)][1]
-
-  if (is.na(found)) {
-    stop(
-      "Could not find ", label, ". Place it beside this Rmd, ",
-      "inside a data/ folder, or update the file candidates."
+if (any(!file.exists(input_files))) {
+  stop(
+    "Could not find: ",
+    paste(
+      input_files[!file.exists(input_files)],
+      collapse = ", "
     )
-  }
-
-  found
+  )
 }
 
-BENTHIC_FILE <- find_first_file(
-  BENTHIC_FILE_CANDIDATES,
-  "benthic_carbon_mass.xlsx"
-)
-
-PELAGIC_FILE <- find_first_file(
-  PELAGIC_FILE_CANDIDATES,
-  "pelagic_carbon_mass.xlsx"
-)
-
-OUTPUT_DIR <- "outputs_erw_form_comparison"
+OUTPUT_DIR <- "../outputs/particulate_carbon"
 FIGURE_DIR <- file.path(OUTPUT_DIR, "figures")
 
 dir.create(OUTPUT_DIR, recursive = TRUE, showWarnings = FALSE)
