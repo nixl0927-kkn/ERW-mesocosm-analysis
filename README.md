@@ -1,6 +1,6 @@
 # ERW Mesocosm Analysis
 
-This repository contains the data and R code used to analyse carbon cycling and stream metabolism in an enhanced rock weathering (ERW) mesocosm experiment. The experiment compared six ERW application rates (0, 5, 10, 20, 50 and 100 t ha⁻¹) under groundwater and river-water conditions.
+This repository contains the data and R code used to analyse carbon cycling and stream metabolism in an enhanced rock weathering (ERW) mesocosm experiment. The experiment compared six ERW application rates (0, 5, 10, 20, 50 and 100 t ha⁻¹) under groundwater and river water conditions.
 
 The analyses cover stream metabolism (GPP, ER and NEP), dissolved inorganic and organic carbon, benthic and pelagic particulate carbon, and an overview of the measured carbon pools.
 
