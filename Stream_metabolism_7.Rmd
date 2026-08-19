@@ -1,0 +1,957 @@
+---
+title: "Enhanced Rock Weathering Mesocosm Experiment: K600 Screening and Stream Metabolism"
+author: "Xinlin Ni"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    code_folding: show
+params:
+  data_file: "/Users/nixl/Documents/IC/dissertation/code/dissoved_oxygen/combined_do_light_data.csv"
+  meso9_file: "/Users/nixl/Documents/IC/dissertation/code/dissoved_oxygen/Meso_9_clean.xlsx"
+  output_dir: "/Users/nixl/Documents/IC/dissertation/code/version_2/metabolism/v_2/results"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width  = 10,
+  fig.height = 8,
+  dpi = 300
+)
+
+if (!exists("params")) {
+  params <- list(
+    data_file  = "/Users/nixl/Documents/IC/dissertation/code/dissoved_oxygen/combined_do_light_data.csv",
+    meso9_file = "/Users/nixl/Documents/IC/dissertation/code/dissoved_oxygen/Meso_9_clean.xlsx",
+    output_dir = "/Users/nixl/Documents/IC/dissertation/code/version_2/metabolism/v_2/results"
+  )
+}
+```
+
+# 1. Packages and global settings
+
+```{r load_libraries}
+library(tidyverse)
+library(readxl)
+library(lubridate)
+library(suncalc)
+library(lme4)
+library(lmerTest)
+library(ggeffects)
+library(broom.mixed)
+library(MuMIn)
+library(patchwork)
+library(scales)
+library(DHARMa)
+library(knitr)
+
+WATER_COLOURS    <- c("Ground" = "#0072B2", "River" = "#D55E00")
+WATER_LABELS     <- c("Ground" = "Groundwater", "River" = "River water")
+WATER_SHAPES     <- c("Ground" = 16, "River" = 17)
+METRIC_COLOURS   <- c("GPP" = "#2196F3", "ER" = "#F44336")
+TREATMENT_LEVELS <- c(0, 5, 10, 20, 50, 100)
+
+if (!dir.exists(params$output_dir)) {
+  dir.create(params$output_dir, recursive = TRUE)
+}
+
+theme_xinlin <- function(base_size = 11) {
+  theme_classic(base_size = base_size) +
+    theme(
+      plot.title       = element_text(hjust = 0.5, face = "bold"),
+      legend.position  = "top",
+      strip.background = element_rect(fill = "grey95", colour = "grey70"),
+      strip.text       = element_text(face = "bold"),
+      axis.text.x      = element_text(angle = 45, hjust = 1)
+    )
+}
+```
+
+# 2. Read and inspect the data
+
+```{r read_data}
+if (!file.exists(params$data_file)) {
+  stop("Data file not found: ", params$data_file)
+}
+
+meso9_file_candidates <- unique(c(
+  params$meso9_file,
+  "Meso_9_clean.xlsx",
+  "Meso_9_clean(1).xlsx",
+  file.path(dirname(params$data_file), "Meso_9_clean.xlsx"),
+  file.path(dirname(params$data_file), "Meso_9_clean(1).xlsx")
+))
+
+meso9_file <- meso9_file_candidates[
+  file.exists(meso9_file_candidates)
+][1]
+
+if (is.na(meso9_file)) {
+  stop(
+    "Corrected Mesocosm 9 file not found. ",
+    "Place Meso_9_clean.xlsx beside this Rmd or update params$meso9_file."
+  )
+}
+
+df_original <- read_csv(params$data_file) %>%
+  mutate(timestamp = ymd_hms(timestamp, tz = "UTC"))
+
+meso9_metadata <- df_original %>%
+  filter(as.character(mesocosm) == "9") %>%
+  distinct(mesocosm, treatment_label, water_type, treatment) %>%
+  slice(1)
+
+if (nrow(meso9_metadata) == 0) {
+  meso9_metadata <- tibble(
+    mesocosm = 9,
+    treatment_label = "0 t/ha",
+    water_type = "River",
+    treatment = 0
+  )
+}
+
+parse_meso9_timestamp <- function(x) {
+  if (inherits(x, "POSIXt")) {
+    return(with_tz(x, "UTC"))
+  }
+
+  if (inherits(x, "Date")) {
+    return(as_datetime(x, tz = "UTC"))
+  }
+
+  if (is.numeric(x)) {
+    return(as.POSIXct(
+      x * 86400,
+      origin = "1899-12-30",
+      tz = "UTC"
+    ))
+  }
+
+  ymd_hms(x, tz = "UTC")
+}
+
+meso9_corrected <- read_excel(
+  path = meso9_file,
+  sheet = "Meso_9_clean",
+  range = cell_cols("A:F"),
+  na = c("", "NA")
+) %>%
+  transmute(
+    timestamp = parse_meso9_timestamp(TIMESTAMP),
+    mesocosm = meso9_metadata$mesocosm[[1]],
+    treatment_label = meso9_metadata$treatment_label[[1]],
+    water_type = meso9_metadata$water_type[[1]],
+    treatment = meso9_metadata$treatment[[1]],
+    Temp = as.numeric(Tw_9_Avg),
+    temp_c = as.numeric(Tw_9_Avg),
+    do_corrected = as.numeric(DO_conc_final)
+  )
+
+df <- df_original %>%
+  filter(as.character(mesocosm) != "9") %>%
+  bind_rows(meso9_corrected) %>%
+  filter(
+    timestamp >= as.Date("2025-05-15"),
+    timestamp < as.Date("2025-06-13")
+  ) %>%
+  arrange(mesocosm, timestamp) %>%
+  mutate(temp_final = ifelse(is.na(Temp), temp_c, Temp))
+
+glimpse(df)
+
+cat(
+  "Corrected Mesocosm 9 observations included:",
+  sum(as.character(df$mesocosm) == "9"),
+  "\n"
+)
+
+treatment_info <- df %>%
+  distinct(mesocosm, treatment_label, water_type, treatment)
+
+treatment_info %>%
+  arrange(water_type, treatment) %>%
+  kable(caption = "Mesocosm treatment allocation")
+```
+
+# 3. Global parameters
+
+```{r global_params}
+depth <- 0.15
+bpabs <- 760
+dt    <- 15 / (60 * 24)
+```
+
+# 4. Metabolism calculation functions
+
+```{r helper_functions}
+# O2 saturation (Garcia & Gordon 1992, Eq. 34.16)
+calc_osat <- function(temp, bp = 760) {
+  ts <- log((298.15 - temp) / (273.15 + temp))
+  a0 <- 2.00907; a1 <- 3.22014; a2 <- 4.0501
+  a3 <- 4.94457; a4 <- -0.256847; a5 <- 3.88767
+  u  <- 10^(8.10765 - 1750.3 / (235 + temp))
+  osat_std <- exp(a0 + a1*ts + a2*ts^2 + a3*ts^3 + a4*ts^4 + a5*ts^5)
+  osat_std * (bp - u) / (760 - u) * 1.42905
+}
+
+# K600 -> KO (Wanninkhof 1992, Eq. 34.15)
+calc_KO <- function(temp, K600) {
+  K600 / ((600 / (1800.6 - 120.10*temp + 3.7818*temp^2 - 0.047608*temp^3))^(-0.5))
+}
+
+# Sunrise/sunset (Birmingham: 52.45N, -1.93W)
+get_sun_times <- function(date, lat = 52.45, lon = -1.93) {
+  st <- getSunlightTimes(
+    date = date, lat = lat, lon = lon,
+    keep = c("sunrise", "sunset"), tz = "UTC"
+  )
+  list(sunrise = st$sunrise, sunset = st$sunset)
+}
+
+# Core metabolism calculation (Hall & Hotchkiss 2017, Section 34.3.1.5)
+calc_metabolism_day <- function(data_day, K600, depth, bp = 760) {
+  data_day <- data_day %>%
+    arrange(timestamp) %>%
+    mutate(
+      osat         = calc_osat(temp_final, bp),
+      KO           = calc_KO(temp_final, K600),
+      deficit      = osat - do_corrected,
+      gas_exchange = KO * deficit,
+      dO_dt        = (lead(do_corrected) - do_corrected) / dt,
+      metab_vol    = dO_dt - gas_exchange,
+      metab_area   = metab_vol * .env$depth
+    )
+
+  the_date <- as.Date(data_day$timestamp[1])
+  sun      <- get_sun_times(the_date)
+
+  data_day <- data_day %>%
+    mutate(is_night = timestamp < sun$sunrise | timestamp >= sun$sunset)
+
+  ER <- data_day %>%
+    filter(is_night, !is.na(metab_area)) %>%
+    pull(metab_area) %>%
+    mean(na.rm = TRUE)
+
+  daytime <- data_day %>% filter(!is_night, !is.na(metab_area))
+  if (nrow(daytime) == 0) return(tibble(GPP = NA, ER = ER))
+
+  GPP <- sum((daytime$metab_area - ER) * dt, na.rm = TRUE)
+  tibble(GPP = GPP, ER = ER)
+}
+
+# Estimate daily K600 from nighttime oxygen dynamics
+nighttime_regression <- function(data_day, bp = 760) {
+  data_day <- data_day %>%
+    arrange(timestamp) %>%
+    mutate(
+      osat    = calc_osat(temp_final, bp),
+      deficit = osat - do_corrected,
+      dO_dt   = (lead(do_corrected) - do_corrected) / dt
+    )
+
+  the_date <- as.Date(data_day$timestamp[1])
+  sun      <- get_sun_times(the_date)
+
+  night_data <- data_day %>%
+    filter(timestamp < sun$sunrise | timestamp >= sun$sunset) %>%
+    filter(!is.na(dO_dt), !is.na(deficit))
+
+  if (nrow(night_data) < 5) {
+    return(tibble(KO_nightreg = NA_real_, K600_nightreg = NA_real_))
+  }
+
+  fit       <- lm(dO_dt ~ deficit, data = night_data)
+  KO_est    <- unname(coef(fit)["deficit"])
+  mean_temp <- mean(night_data$temp_final, na.rm = TRUE)
+  ScO2      <- 1800.6 - 120.10 * mean_temp +
+    3.7818 * mean_temp^2 - 0.047608 * mean_temp^3
+  K600_est  <- KO_est * (600 / ScO2)^0.5
+
+  tibble(KO_nightreg = KO_est, K600_nightreg = K600_est)
+}
+```
+
+# 5. K600 method screening
+
+First, GPP and ER are calculated using three K600 approaches: the fixed
+literature value of 6.72, a fixed value equal to the median of valid nighttime
+regression estimates, and daily dynamic nighttime-regression estimates. The
+fixed literature value is retained for all subsequent figures and models.
+
+## 5.1 Estimate K600 by nighttime regression
+
+```{r estimate_nighttime_K600}
+nightreg_results <- df %>%
+  filter(!is.na(do_corrected), !is.na(temp_final)) %>%
+  mutate(date = as.Date(timestamp)) %>%
+  group_by(mesocosm, date) %>%
+  group_modify(~ nighttime_regression(.x)) %>%
+  ungroup()
+
+nightreg_clean <- nightreg_results %>%
+  filter(
+    is.finite(K600_nightreg),
+    K600_nightreg > 0,
+    K600_nightreg < 50
+  )
+
+K600_median <- median(nightreg_clean$K600_nightreg, na.rm = TRUE)
+
+K600_estimation_summary <- tibble(
+  Total_mesocosm_days = nrow(nightreg_results),
+  Retained_mesocosm_days = nrow(nightreg_clean),
+  Fixed_literature_K600 = 6.72,
+  Median_nighttime_regression_K600 = round(K600_median, 3)
+)
+
+K600_estimation_summary %>%
+  kable(caption = "Summary of nighttime-regression K600 estimates")
+```
+
+## 5.2 Calculate GPP and ER using the three K600 methods
+
+```{r calculate_three_K600_methods}
+# Method A: fixed literature value
+results_6.72 <- df %>%
+  filter(!is.na(do_corrected), !is.na(temp_final)) %>%
+  mutate(date = as.Date(timestamp)) %>%
+  group_by(mesocosm, date) %>%
+  group_modify(~ calc_metabolism_day(.x, K600 = 6.72, depth = depth)) %>%
+  ungroup()
+
+# Method B: fixed nighttime-regression median
+results_nightreg_median <- df %>%
+  filter(!is.na(do_corrected), !is.na(temp_final)) %>%
+  mutate(date = as.Date(timestamp)) %>%
+  group_by(mesocosm, date) %>%
+  group_modify(~ calc_metabolism_day(
+    .x, K600 = K600_median, depth = depth
+  )) %>%
+  ungroup()
+
+# Method C: dynamic daily nighttime-regression estimate
+results_nightreg_dynamic <- df %>%
+  filter(!is.na(do_corrected), !is.na(temp_final)) %>%
+  mutate(date = as.Date(timestamp)) %>%
+  left_join(
+    nightreg_clean %>% select(mesocosm, date, K600_nightreg),
+    by = c("mesocosm", "date")
+  ) %>%
+  filter(!is.na(K600_nightreg)) %>%
+  group_by(mesocosm, date, K600_nightreg) %>%
+  group_modify(~ calc_metabolism_day(
+    .x, K600 = unique(.y$K600_nightreg), depth = depth
+  )) %>%
+  ungroup()
+```
+
+## 5.3 Compare physiological signs and retained days
+
+```{r compare_K600_methods}
+summarise_K600_method <- function(data, method, K600_value) {
+  data %>%
+    summarise(
+      `ER positive (%)` = round(mean(ER > 0, na.rm = TRUE) * 100, 1),
+      `GPP negative (%)` = round(mean(GPP < 0, na.rm = TRUE) * 100, 1),
+      `Retained mesocosm-days` = sum(!is.na(GPP) & !is.na(ER))
+    ) %>%
+    mutate(Method = method, K600 = K600_value, .before = 1)
+}
+
+K600_method_comparison <- bind_rows(
+  summarise_K600_method(
+    results_6.72,
+    "Fixed literature K600",
+    "6.72"
+  ),
+  summarise_K600_method(
+    results_nightreg_median,
+    "Fixed nighttime-regression median",
+    sprintf("%.2f", K600_median)
+  ),
+  summarise_K600_method(
+    results_nightreg_dynamic,
+    "Dynamic daily nighttime regression",
+    "Daily dynamic"
+  )
+)
+
+K600_method_comparison %>%
+  kable(caption = "Comparison of GPP and ER results among the three K600 methods")
+```
+
+# 5.4 Select K600 = 6.72 for the main analysis
+
+The fixed literature value of K600 = 6.72 was selected as the primary method
+because it provided the best balance between physiologically expected GPP and
+ER signs and complete temporal coverage. All analyses below use this method
+only.
+
+```{r select_primary_K600}
+results <- results_6.72
+
+cat("Selected K600: 6.72 (fixed literature value)\n")
+cat("Mesocosms:", length(unique(results$mesocosm)), "\n")
+cat("Days:", length(unique(results$date)), "\n")
+```
+
+# 6. Visualisation
+
+```{r gpp_er_plot_helpers}
+# Prepare long-format data for GPP/ER plots
+plot_data <- results %>%
+  left_join(treatment_info, by = "mesocosm") %>%
+  mutate(
+    treatment  = factor(treatment, levels = TREATMENT_LEVELS),
+    water_type = factor(water_type, levels = c("Ground", "River"))
+  ) %>%
+  pivot_longer(cols = c(GPP, ER), names_to = "metric", values_to = "value")
+
+early_period <- seq(as.Date("2025-05-15"), as.Date("2025-05-22"), by = "day")
+
+# Time series
+plot_timeseries <- function(data_long) {
+  ggplot(data_long, aes(x = date, y = value, color = metric)) +
+    geom_line() +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+    facet_wrap(~ mesocosm, ncol = 4) +
+    scale_color_manual(values = METRIC_COLOURS) +
+    labs(
+      title = "Daily GPP and ER per Mesocosm (K600 = 6.72)",
+      x     = "Date",
+      y     = expression(g~O[2]~m^{-2}~d^{-1}),
+      color = ""
+    ) +
+    theme_xinlin() +
+    theme(axis.text.x = element_text(size = 7),
+          strip.text  = element_text(size = 8))
+}
+
+# Boxplot by treatment (sqrt x-axis)
+plot_boxplot <- function(data_long) {
+  data_long %>%
+    filter(!is.na(value)) %>%
+    mutate(treatment = as.numeric(as.character(treatment))) %>%
+    ggplot(aes(x = treatment, y = value, fill = metric,
+               group = interaction(treatment, metric))) +
+    geom_boxplot(outlier.shape = 21, outlier.size = 1.5) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+    facet_wrap(~ water_type, ncol = 1) +
+    scale_x_continuous(trans = scales::transform_sqrt(), breaks = TREATMENT_LEVELS) +
+    scale_fill_manual(values = METRIC_COLOURS) +
+    labs(
+      title = "GPP and ER by Basalt Treatment (K600 = 6.72)",
+      x    = expression("ERW application (t ha"^{-1}*")"),
+      y    = expression(g~O[2]~m^{-2}~d^{-1}),
+      fill = ""
+    ) +
+    theme_xinlin()
+}
+
+```
+
+
+```{r daily_nep_plot_helper}
+# Daily NEP
+plot_daily_NEP <- function(results) {
+  results %>%
+    left_join(treatment_info, by = "mesocosm") %>%
+    mutate(
+      NEP = GPP + ER,
+      treatment = factor(treatment, levels = TREATMENT_LEVELS)
+    ) %>%
+    group_by(date, treatment, water_type) %>%
+    summarise(
+      mean_NEP = mean(NEP, na.rm = TRUE),
+      se_NEP = sd(NEP, na.rm = TRUE) / sqrt(sum(!is.na(NEP))),
+      .groups = "drop"
+    ) %>%
+    ggplot(aes(x = date, y = mean_NEP, color = treatment, fill = treatment)) +
+    geom_ribbon(aes(ymin = mean_NEP - se_NEP,
+                    ymax = mean_NEP + se_NEP),
+                alpha = 0.08, color = NA) +
+    geom_line(linewidth = 1) +
+    geom_point(size = 0.8) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+    geom_vline(xintercept = as.Date("2025-05-22"),
+               linetype = "dashed", color = "grey50") +
+    facet_wrap(~ water_type, ncol = 2,
+               labeller = as_labeller(c(Ground = "(a) Ground", River = "(b) River"))) +
+    scale_color_viridis_d(option = "plasma", name = "ERW application (t/ha)") +
+    scale_fill_viridis_d(option  = "plasma", name = "ERW application (t/ha)") +
+    coord_cartesian(ylim = c(-1.3, NA)) +
+    labs(
+      title = "Daily NEP by Basalt Treatment (K600 = 6.72)",
+      x = "Date",
+      y = expression(Daily~NEP~(g~O[2]~m^{-2}~d^{-1}))
+    ) +
+    theme_xinlin() +
+    theme(
+      legend.position = "right",
+      legend.direction = "vertical",
+      legend.key.height = unit(0.5, "cm"),
+      legend.spacing.y = unit(0.15, "cm"),
+      strip.text = element_text(hjust = 0, size = 14),
+      axis.text.x = element_text(size = 13, angle = 0, hjust = 0.5),
+      axis.text.y = element_text(size = 13),
+      axis.title.x = element_text(size = 14),
+      axis.title.y = element_text(size = 14),
+      legend.text = element_text(size = 14),
+      legend.title = element_text(size = 14)
+    )
+}
+
+```
+
+
+# 6.1 Figures
+
+## Time series
+
+```{r fig_timeseries, fig.width=14, fig.height=10}
+print(plot_timeseries(plot_data))
+
+```
+
+## Boxplot by treatment
+
+```{r fig_boxplot, fig.width=8, fig.height=10}
+print(plot_boxplot(plot_data))
+```
+
+## Daily NEP
+
+```{r fig_daily_nep, fig.width=14, fig.height=6}
+print(plot_daily_NEP(results))
+```
+
+## Maximum daily NEP by water type
+
+The following summary reports the maximum treatment-level mean daily NEP for
+each water type, together with the date and ERW treatment at which it occurred.
+These values are calculated using the same grouping as the daily NEP figure.
+
+```{r max_daily_nep_by_water}
+daily_nep_summary <- results %>%
+  left_join(treatment_info, by = "mesocosm") %>%
+  mutate(NEP = GPP + ER) %>%
+  group_by(water_type, treatment, date) %>%
+  summarise(
+    mean_NEP = mean(NEP, na.rm = TRUE),
+    n = sum(!is.na(NEP)),
+    .groups = "drop"
+  )
+
+max_daily_nep_by_water <- daily_nep_summary %>%
+  filter(is.finite(mean_NEP)) %>%
+  group_by(water_type) %>%
+  slice_max(order_by = mean_NEP, n = 1, with_ties = TRUE) %>%
+  ungroup() %>%
+  mutate(
+    water_type = dplyr::recode(
+      as.character(water_type),
+      Ground = "Groundwater",
+      River = "River water"
+    )
+  ) %>%
+  arrange(water_type, date, treatment)
+
+max_daily_nep_by_water %>%
+  select(water_type, mean_NEP, date, treatment, n) %>%
+  kable(
+    digits = 3,
+    col.names = c(
+      "Water type",
+      "Maximum mean daily NEP (g O2 m-2 d-1)",
+      "Date",
+      "ERW treatment (t/ha)",
+      "n"
+    ),
+    caption = "Maximum mean daily NEP for each water type"
+  )
+
+max_daily_nep_by_water %>%
+  mutate(
+    result = sprintf(
+      "%s: the maximum mean daily NEP was %.3f g O2 m-2 d-1 on %s at the %s t/ha ERW treatment (n = %d).",
+      water_type,
+      mean_NEP,
+      format(date, "%d %B %Y"),
+      treatment,
+      n
+    )
+  ) %>%
+  pull(result) %>%
+  cat(sep = "\n")
+```
+
+# 7. Linear mixed-effects models
+
+Final model: `Response ~ treatment + water_type + (1|mesocosm) + (1|date)`
+0 t/ha control included, no interaction term (selected by AIC).
+
+## Prepare data and fit models
+
+```{r lmm_fit}
+prepare_lmm_data <- function(results) {
+  base <- results %>%
+    left_join(treatment_info, by = "mesocosm") %>%
+    mutate(
+      treatment  = as.numeric(as.character(treatment)),
+      date       = as.factor(as.Date(date)),
+      water_type = as.factor(water_type),
+      mesocosm   = as.factor(mesocosm)
+    )
+  nep_data    <- base %>% filter(!is.na(GPP), !is.na(ER)) %>% mutate(NEP = GPP + ER)
+  gpp_er_data <- base %>% filter(!is.na(GPP), !is.na(ER))
+  list(
+    nep_data               = nep_data,
+    gpp_er_data            = gpp_er_data,
+    nep_data_no_control    = nep_data    %>% filter(treatment != 0),
+    gpp_er_data_no_control = gpp_er_data %>% filter(treatment != 0)
+  )
+}
+
+d <- prepare_lmm_data(results)
+
+f  <- function(resp, dat)
+  lmer(as.formula(paste0(resp, " ~ treatment + water_type + (1|mesocosm) + (1|date)")),
+       data = dat)
+fi <- function(resp, dat)
+  lmer(as.formula(paste0(resp, " ~ treatment + water_type + treatment:water_type + (1|mesocosm) + (1|date)")),
+       data = dat)
+
+# All four model variants for AIC comparison
+M_NEP          <- fi("NEP", d$nep_data)
+M_GPP          <- fi("GPP", d$gpp_er_data)
+M_ER           <- fi("ER",  d$gpp_er_data)
+
+M_NEP_final    <- f("NEP",  d$nep_data)
+M_GPP_final    <- f("GPP",  d$gpp_er_data)
+M_ER_final     <- f("ER",   d$gpp_er_data)
+
+M_NEP_nc       <- fi("NEP", d$nep_data_no_control)
+M_GPP_nc       <- fi("GPP", d$gpp_er_data_no_control)
+M_ER_nc        <- fi("ER",  d$gpp_er_data_no_control)
+
+M_NEP_nc_noint <- f("NEP",  d$nep_data_no_control)
+M_GPP_nc_noint <- f("GPP",  d$gpp_er_data_no_control)
+M_ER_nc_noint  <- f("ER",   d$gpp_er_data_no_control)
+```
+
+## AIC comparison
+
+```{r lmm_aic}
+aic_table <- tibble(
+  Response = rep(c("NEP", "GPP", "ER"), each = 4),
+  Model    = rep(c("Full (interaction, all data)",
+                   "No interaction, all data — FINAL",
+                   "No control, with interaction",
+                   "No control, no interaction"), times = 3),
+  AIC = round(c(
+    AIC(M_NEP), AIC(M_NEP_final), AIC(M_NEP_nc), AIC(M_NEP_nc_noint),
+    AIC(M_GPP), AIC(M_GPP_final), AIC(M_GPP_nc), AIC(M_GPP_nc_noint),
+    AIC(M_ER),  AIC(M_ER_final),  AIC(M_ER_nc),  AIC(M_ER_nc_noint)
+  ), 2)
+)
+
+aic_table %>% kable(caption = "AIC by model variant (compare within same Response only)")
+```
+
+## Fixed-effect coefficients (final model)
+
+```{r lmm_coefficients}
+coef_table <- bind_rows(
+  tidy(M_NEP_final, effects = "fixed") %>% mutate(Response = "NEP"),
+  tidy(M_GPP_final, effects = "fixed") %>% mutate(Response = "GPP"),
+  tidy(M_ER_final,  effects = "fixed") %>% mutate(Response = "ER")
+) %>%
+  filter(term != "(Intercept)") %>%
+  mutate(
+    estimate  = round(estimate,  4),
+    std.error = round(std.error, 4),
+    p.value   = round(p.value,   4),
+    sig = case_when(
+      p.value < 0.001 ~ "***", p.value < 0.01 ~ "**",
+      p.value < 0.05  ~ "*",   p.value < 0.1  ~ ".",
+      TRUE            ~ "ns"
+    )
+  ) %>%
+  select(Response, term, estimate, std.error, p.value, sig)
+
+coef_table %>%
+  kable(caption = "Fixed-effect coefficients — final model (no interaction, 0 t/ha included)")
+```
+
+## Type II ANOVA
+
+```{r lmm_anova}
+anova_table <- bind_rows(
+  anova(M_NEP_final, type = 2, ddf = "Satterthwaite") %>%
+    as.data.frame() %>% rownames_to_column("term") %>% mutate(Response = "NEP"),
+  anova(M_GPP_final, type = 2, ddf = "Satterthwaite") %>%
+    as.data.frame() %>% rownames_to_column("term") %>% mutate(Response = "GPP"),
+  anova(M_ER_final,  type = 2, ddf = "Satterthwaite") %>%
+    as.data.frame() %>% rownames_to_column("term") %>% mutate(Response = "ER")
+) %>%
+  select(Response, term, `F value`, `Pr(>F)`) %>%
+  mutate(
+    `F value` = round(`F value`, 3),
+    `Pr(>F)`  = round(`Pr(>F)`,  4),
+    sig = case_when(
+      `Pr(>F)` < 0.001 ~ "***", `Pr(>F)` < 0.01 ~ "**",
+      `Pr(>F)` < 0.05  ~ "*",   `Pr(>F)` < 0.1  ~ ".",
+      TRUE             ~ "ns"
+    )
+  )
+
+anova_table %>%
+  kable(caption = "Type II ANOVA — final model")
+```
+
+## R-squared
+
+```{r lmm_rsquared}
+rsq_table <- bind_rows(
+  bind_cols(Response = "NEP", as.data.frame(r.squaredGLMM(M_NEP_final))),
+  bind_cols(Response = "GPP", as.data.frame(r.squaredGLMM(M_GPP_final))),
+  bind_cols(Response = "ER",  as.data.frame(r.squaredGLMM(M_ER_final)))
+) %>%
+  mutate(across(where(is.numeric), ~ round(.x, 3)))
+
+rsq_table %>%
+  kable(caption = "Marginal (R2m) and conditional (R2c) R-squared — final model")
+```
+
+## 7.1 Daily NEP model with date as a fixed effect
+
+This additional model treats sampling date as a categorical fixed effect:
+`NEP ~ treatment + water_type + date + (1|mesocosm)`.
+
+```{r daily_nep_date_fixed_model}
+M_NEP_date_fixed <- lmer(
+  NEP ~ treatment + water_type + date + (1 | mesocosm),
+  data = d$nep_data
+)
+
+# Complete model summary
+summary(M_NEP_date_fixed)
+
+# Fixed-effect coefficient results
+nep_date_fixed_coefficients <- tidy(
+  M_NEP_date_fixed,
+  effects = "fixed",
+  conf.int = TRUE
+) %>%
+  mutate(across(where(is.numeric), ~ round(.x, 4)))
+
+nep_date_fixed_coefficients %>%
+  kable(caption = "Daily NEP model coefficients — date fitted as a fixed effect")
+
+# Overall tests for treatment, water type and date
+nep_date_fixed_anova <- anova(
+  M_NEP_date_fixed,
+  type = 2,
+  ddf = "Satterthwaite"
+) %>%
+  as.data.frame() %>%
+  rownames_to_column("term") %>%
+  mutate(across(where(is.numeric), ~ round(.x, 4)))
+
+nep_date_fixed_anova %>%
+  kable(caption = "Type II ANOVA — daily NEP model with date as a fixed effect")
+```
+
+## 7.2 Model diagnostics (DHARMa)
+
+```{r lmm_diagnostics, fig.width=8, fig.height=6}
+for (resp in c("NEP", "GPP", "ER")) {
+  model <- get(paste0("M_", resp, "_final"))
+  cat("\n\n**", resp, "diagnostics**\n\n")
+  sim <- simulateResiduals(model)
+  plot(sim, main = paste("Final model —", resp))
+}
+```
+
+## 7.3 Prediction plots
+
+```{r lmm_predictions, fig.width=16, fig.height=6}
+make_pred_panel <- function(pred, raw_data, y_var, y_label, title) {
+  pred %>%
+    as.data.frame() %>%
+    mutate(panel_label = title) %>%
+    ggplot(aes(x = x, y = predicted, colour = group, fill = group)) +
+    geom_point(
+      data = raw_data %>% mutate(panel_label = title),
+      aes(x = treatment, y = .data[[y_var]], colour = water_type),
+      inherit.aes = FALSE,
+      alpha = 0.15,
+      size = 1
+    ) +
+    geom_ribbon(
+      aes(ymin = conf.low, ymax = conf.high),
+      alpha = 0.2,
+      colour = NA
+    ) +
+    geom_line(linewidth = 1) +
+    geom_hline(
+      yintercept = 0,
+      linetype = "dashed",
+      colour = "grey50"
+    ) +
+    facet_wrap(~ panel_label) +
+    scale_x_continuous(
+      trans = scales::transform_sqrt(),
+      breaks = TREATMENT_LEVELS
+    ) +
+    scale_colour_manual(
+      values = WATER_COLOURS,
+      labels = WATER_LABELS
+    ) +
+    scale_fill_manual(
+      values = WATER_COLOURS,
+      labels = WATER_LABELS
+    ) +
+    labs(
+      x = expression("ERW application (t ha"^{-1}*")"),
+      y = y_label,
+      colour = "Water type",
+      fill = "Water type"
+    ) +
+    theme_classic() +
+    theme(
+      legend.position = "right",
+      strip.background = element_blank(),
+      strip.text = element_text(
+        face = "bold",
+        hjust = 0,
+        size = 14
+      ),
+      axis.text.x = element_text(
+        hjust = 1,
+        size = 13
+      ),
+      axis.text.y = element_text(
+        size = 13
+      ),
+      axis.title.x = element_text(
+        size = 14
+      ),
+      axis.title.y = element_text(
+        size = 14
+      ),
+      legend.text = element_text(
+        size = 14
+      ),
+      legend.title = element_text(
+        size = 14
+      )
+    ) +
+    geom_jitter(
+      data = raw_data %>% mutate(panel_label = title),
+      aes(
+        x = treatment,
+        y = .data[[y_var]],
+        colour = water_type
+      ),
+      inherit.aes = FALSE,
+      alpha = 0.15,
+      size = 1,
+      width = 0.8,
+      height = 0
+    )
+}
+
+pred_NEP <- ggpredict(
+  M_NEP_final,
+  terms = c("treatment [0,5,10,20,50,100]", "water_type")
+)
+
+pred_GPP <- ggpredict(
+  M_GPP_final,
+  terms = c("treatment [0,5,10,20,50,100]", "water_type")
+)
+
+pred_ER <- ggpredict(
+  M_ER_final,
+  terms = c("treatment [0,5,10,20,50,100]", "water_type")
+)
+
+p_NEP <- make_pred_panel(
+  pred_NEP,
+  d$nep_data,
+  "NEP",
+  expression(NEP~(g~O[2]~m^{-2}~d^{-1})),
+  "(a)"
+)
+
+p_GPP <- make_pred_panel(
+  pred_GPP,
+  d$gpp_er_data,
+  "GPP",
+  expression(GPP~(g~O[2]~m^{-2}~d^{-1})),
+  "(b)"
+)
+
+p_ER <- make_pred_panel(
+  pred_ER,
+  d$gpp_er_data,
+  "ER",
+  expression(ER~(g~O[2]~m^{-2}~d^{-1})),
+  "(c)"
+)
+
+p_combined <- p_NEP + p_GPP + p_ER +
+  plot_layout(ncol = 3, guides = "collect") &
+  theme(legend.position = "right")
+
+p_combined
+```
+
+
+# 8. Save outputs
+
+```{r save_outputs}
+ggsave(file.path(params$output_dir, "GPP_ER_timeseries.png"),
+       plot_timeseries(plot_data), width = 14, height = 10, dpi = 300)
+
+ggsave(file.path(params$output_dir, "GPP_ER_boxplot.png"),
+       plot_boxplot(plot_data), width = 8, height = 10, dpi = 300)
+
+ggsave(file.path(params$output_dir, "daily_NEP.png"),
+       plot_daily_NEP(results), width = 13, height = 6, dpi = 300)
+
+
+ggsave(file.path(params$output_dir, "model_pred_combined.png"),
+       p_combined, width = 17, height = 6, dpi = 300)
+
+write_csv(results,      file.path(params$output_dir, "metabolism_results_K600_6.72.csv"))
+write_csv(K600_estimation_summary,
+          file.path(params$output_dir, "K600_nighttime_regression_summary.csv"))
+write_csv(K600_method_comparison,
+          file.path(params$output_dir, "K600_method_screening_comparison.csv"))
+write_csv(nightreg_results,
+          file.path(params$output_dir, "K600_nighttime_regression_all.csv"))
+write_csv(nightreg_clean,
+          file.path(params$output_dir, "K600_nighttime_regression_retained.csv"))
+write_csv(aic_table,    file.path(params$output_dir, "lmm_AIC_comparison.csv"))
+write_csv(coef_table,   file.path(params$output_dir, "lmm_coefficients_final_model.csv"))
+write_csv(anova_table,  file.path(params$output_dir, "lmm_type2_anova_final_model.csv"))
+write_csv(rsq_table,    file.path(params$output_dir, "lmm_Rsquared_final_model.csv"))
+write_csv(nep_date_fixed_coefficients,
+          file.path(params$output_dir, "daily_NEP_date_fixed_coefficients.csv"))
+write_csv(nep_date_fixed_anova,
+          file.path(params$output_dir, "daily_NEP_date_fixed_type2_anova.csv"))
+```
+
+# 9. Reproducibility
+
+```{r session_info}
+sessionInfo()
+```

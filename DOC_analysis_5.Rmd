@@ -1,0 +1,414 @@
+---
+title: "Enhanced Rock Weathering Flume Experiment: Dissolved Organic Carbon"
+author: "Xinlin Ni"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    code_folding: show
+    theme: flatly
+params:
+  doc_data_file: "/Users/nixl/Documents/IC/dissertation/code/carbon/Dissolved/data/ERW_DOC.xlsx"
+  doc_data_sheet: 1
+  output_dir: "outputs/DOC_ERW_form_comparison"
+---
+
+# Overview
+
+DOC was sampled once, on 22 May 2025. All models include the complete ERW gradient (0, 5, 10, 20, 50 and 100 t ha\(^{-1}\)). Model selection proceeds in two stages: (1) compare centred raw ERW with centred `log1p(ERW)` in identical additive ML models; (2) test the water-type-by-ERW interaction using the selected ERW form. The final model is refitted by REML. Block is retained as a random intercept; date and mesocosm random effects are not fitted because there is one DOC observation per mesocosm.
+
+# 1. Setup
+
+```{r setup, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(readxl)
+library(janitor)
+library(lme4)
+library(lmerTest)
+library(performance)
+library(emmeans)
+library(broom.mixed)
+library(writexl)
+library(knitr)
+
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.align = "center", dpi = 300)
+options(contrasts = c("contr.treatment", "contr.poly"))
+
+ERW_LEVELS <- c(0, 5, 10, 20, 50, 100)
+WATER_LEVELS <- c("Ground", "River")
+WATER_LABELS <- c("Ground" = "Groundwater", "River" = "River water")
+WATER_COLOURS <- c("Ground" = "#0072B2", "River" = "#D55E00")
+WATER_SHAPES <- c("Ground" = 16, "River" = 17)
+AIC_TIE_THRESHOLD <- 2
+INTERACTION_ALPHA <- 0.05
+
+DOC_THEME <- theme_classic(base_size = 11) +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5, colour = "grey30"),
+        axis.title = element_text(face = "bold"),
+        legend.position = "right",
+        legend.title = element_text(face = "bold"))
+
+dir.create(params$output_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+# 2. Import and prepare data
+
+```{r import-prepare}
+if (!file.exists(params$doc_data_file)) {
+  stop("DOC data file not found: ", params$doc_data_file,
+       "\nEdit params$doc_data_file in the YAML header.")
+}
+
+doc_raw <- read_excel(params$doc_data_file, sheet = params$doc_data_sheet,
+                      na = c("", "NA", "N/A", "n.a.")) %>%
+  clean_names()
+
+required_columns <- c("mesocosm", "block", "water_type", "erw_level", "date", "doc")
+missing_columns <- setdiff(required_columns, names(doc_raw))
+if (length(missing_columns) > 0) {
+  stop("Missing required columns: ", paste(missing_columns, collapse = ", "))
+}
+
+doc_data <- doc_raw %>%
+  transmute(
+    Mesocosm = factor(mesocosm),
+    Block = factor(block),
+    Water_type = factor(water_type, levels = WATER_LEVELS),
+    ERW_level = as.numeric(erw_level),
+    ERW_log = log1p(ERW_level),
+    Date = as.Date(date),
+    DOC_mg_C_L = as.numeric(doc)
+  ) %>%
+  arrange(Water_type, ERW_level, Block)
+
+glimpse(doc_data)
+```
+
+# 3. Checks and descriptive results
+
+```{r checks-summary}
+doc_checks <- tibble(
+  check = c("Rows", "Mesocosms", "Blocks", "Sampling dates",
+            "Missing DOC", "Duplicated mesocosms"),
+  value = c(nrow(doc_data), n_distinct(doc_data$Mesocosm),
+            n_distinct(doc_data$Block), n_distinct(doc_data$Date),
+            sum(is.na(doc_data$DOC_mg_C_L)),
+            sum(duplicated(doc_data$Mesocosm)))
+)
+
+doc_summary <- doc_data %>%
+  group_by(Water_type, ERW_level) %>%
+  summarise(n = sum(!is.na(DOC_mg_C_L)),
+            mean = mean(DOC_mg_C_L, na.rm = TRUE),
+            sd = sd(DOC_mg_C_L, na.rm = TRUE),
+            minimum = min(DOC_mg_C_L, na.rm = TRUE),
+            maximum = max(DOC_mg_C_L, na.rm = TRUE),
+            .groups = "drop")
+
+doc_checks %>% kable(caption = "DOC dataset checks")
+doc_summary %>%
+  mutate(Water_type = dplyr::recode(as.character(Water_type), !!!WATER_LABELS)) %>%
+  kable(digits = 3, caption = "DOC descriptive statistics")
+
+control_DOC_mean <- doc_data %>%
+  filter(ERW_level == 0) %>%
+  summarise(
+    mean_control_DOC = mean(DOC_mg_C_L, na.rm = TRUE)
+  )
+
+control_DOC_mean
+```
+
+The square-root spacing below is only a visual display choice; it is unrelated to the ERW form used in the models. A separate 0 t ha\(^{-1}\) plot is unnecessary because the controls are included here and in all models.
+
+```{r main-figure, fig.width=8, fig.height=5.5}
+WATER_OFFSET <- 0.12
+add_plot_x <- function(x) {
+  x %>% mutate(x_plot = sqrt(ERW_level) +
+                 if_else(Water_type == "Ground", -WATER_OFFSET, WATER_OFFSET))
+}
+
+doc_plot_data <- doc_data %>% filter(!is.na(DOC_mg_C_L)) %>% add_plot_x()
+doc_plot_summary <- doc_summary %>% add_plot_x()
+
+p_doc_main <- ggplot(doc_plot_data,
+                     aes(x_plot, DOC_mg_C_L, colour = Water_type,
+                         shape = Water_type)) +
+  geom_point(position = position_jitter(width = 0.05, height = 0, seed = 123),
+             size = 2, alpha = 0.45) +
+  geom_line(data = doc_plot_summary,
+            aes(y = mean, group = Water_type), linewidth = 0.8) +
+  geom_errorbar(data = doc_plot_summary,
+                aes(y = mean, ymin = pmax(mean - sd, 0), ymax = mean + sd),
+                width = 0.10, linewidth = 0.7, na.rm = TRUE) +
+  geom_point(data = doc_plot_summary, aes(y = mean), size = 3.8) +
+  scale_x_continuous(breaks = sqrt(ERW_LEVELS), labels = ERW_LEVELS,
+                     minor_breaks = NULL,
+                     expand = expansion(mult = c(0.04, 0.07))) +
+  scale_colour_manual(values = WATER_COLOURS, labels = WATER_LABELS) +
+  scale_shape_manual(values = WATER_SHAPES, labels = WATER_LABELS) +
+  labs(x = expression("ERW application (" * t ~ ha^{-1} * ")"),
+       y = expression("DOC concentration (mg C L"^{-1}*")"),
+       colour = "Water type", shape = "Water type",
+       title = "Dissolved organic carbon",
+       subtitle = "Raw observations and arithmetic mean ± SD") +
+  DOC_THEME
+
+p_doc_main
+```
+
+# 4. Model data and control audit
+
+```{r model-data}
+doc_model_data <- doc_data %>%
+  filter(
+    !is.na(DOC_mg_C_L),
+    !is.na(ERW_level),
+    !is.na(Water_type),
+    !is.na(Block)
+  ) %>%
+  mutate(erw_raw_c = ERW_level - mean(ERW_level),
+         erw_log_c = ERW_log - mean(ERW_log)) %>%
+  droplevels()
+
+doc_model_counts <- doc_model_data %>%
+  count(Water_type, ERW_level, name = "n") %>%
+  complete(Water_type, ERW_level = ERW_LEVELS, fill = list(n = 0))
+
+if (!0 %in% doc_model_data$ERW_level) {
+  stop("Zero-ERW controls are absent from doc_model_data.")
+}
+if (!all(ERW_LEVELS %in% doc_model_data$ERW_level)) {
+  warning("At least one expected ERW level is absent from doc_model_data.")
+}
+
+doc_model_counts %>% kable(caption = "Observations in all DOC candidate models")
+```
+
+# 5. Stage 1: compare raw and log1p ERW
+
+The two ML models below use the same response, observations, additive fixed effects and random effect. They are non-nested, so their functional forms are compared by AIC rather than a likelihood-ratio test. If their AIC values differ by less than 2, raw ERW is selected for interpretability; selection is not based on the ERW p-value.
+
+```{r stage1}
+fit_doc <- function(formula, reml = FALSE) {
+  lmerTest::lmer(formula, data = doc_model_data, REML = reml,
+                 na.action = na.exclude,
+                 control = lme4::lmerControl(
+                   optimizer = "bobyqa", optCtrl = list(maxfun = 200000)))
+}
+
+doc_raw_additive_ml <- fit_doc(
+  DOC_mg_C_L ~ Water_type + erw_raw_c + (1 | Block))
+doc_log_additive_ml <- fit_doc(
+  DOC_mg_C_L ~ Water_type + erw_log_c + (1 | Block))
+
+doc_erw_form_comparison <- tibble(
+  erw_form = c("Raw ERW", "log1p(ERW)"),
+  predictor = c("erw_raw_c", "erw_log_c"),
+  AIC = c(AIC(doc_raw_additive_ml), AIC(doc_log_additive_ml)),
+  BIC = c(BIC(doc_raw_additive_ml), BIC(doc_log_additive_ml)),
+  logLik = c(as.numeric(logLik(doc_raw_additive_ml)),
+             as.numeric(logLik(doc_log_additive_ml))),
+  n = c(nobs(doc_raw_additive_ml), nobs(doc_log_additive_ml))
+) %>% mutate(delta_AIC = AIC - min(AIC))
+
+doc_erw_candidate_fixed <- bind_rows(
+  broom.mixed::tidy(doc_raw_additive_ml, effects = "fixed", conf.int = TRUE) %>%
+    mutate(erw_form = "Raw ERW", .before = 1),
+  broom.mixed::tidy(doc_log_additive_ml, effects = "fixed", conf.int = TRUE) %>%
+    mutate(erw_form = "log1p(ERW)", .before = 1)
+)
+
+tidy_type2 <- function(model, label) {
+  as.data.frame(anova(model, type = 2, ddf = "Satterthwaite")) %>%
+    rownames_to_column("term") %>% clean_names() %>%
+    mutate(erw_form = label, .before = 1)
+}
+doc_erw_candidate_type2 <- bind_rows(
+  tidy_type2(doc_raw_additive_ml, "Raw ERW"),
+  tidy_type2(doc_log_additive_ml, "log1p(ERW)"))
+
+if (AIC(doc_raw_additive_ml) <=
+    AIC(doc_log_additive_ml) + AIC_TIE_THRESHOLD) {
+  selected_erw_form <- "Raw ERW"
+  selected_erw_var <- "erw_raw_c"
+  doc_selected_additive_ml <- doc_raw_additive_ml
+} else {
+  selected_erw_form <- "log1p(ERW)"
+  selected_erw_var <- "erw_log_c"
+  doc_selected_additive_ml <- doc_log_additive_ml
+}
+
+doc_erw_form_comparison %>% arrange(AIC) %>%
+  kable(digits = 3, caption = "Stage 1: ERW functional-form comparison")
+selected_erw_form
+```
+
+# 6. Stage 2: test the interaction
+
+```{r stage2}
+doc_interaction_formula <- as.formula(paste0(
+  "DOC_mg_C_L ~ Water_type * ", selected_erw_var, " + (1 | Block)"))
+doc_selected_interaction_ml <- fit_doc(doc_interaction_formula)
+
+doc_interaction_lrt <- anova(doc_selected_additive_ml,
+                             doc_selected_interaction_ml, refit = FALSE)
+doc_interaction_aic <- tibble(
+  model = c("Additive", "Water type × ERW interaction"),
+  selected_erw_form = selected_erw_form,
+  AIC = c(AIC(doc_selected_additive_ml),
+          AIC(doc_selected_interaction_ml)),
+  BIC = c(BIC(doc_selected_additive_ml),
+          BIC(doc_selected_interaction_ml)),
+  logLik = c(as.numeric(logLik(doc_selected_additive_ml)),
+             as.numeric(logLik(doc_selected_interaction_ml)))
+) %>% mutate(delta_AIC = AIC - min(AIC))
+
+interaction_p_value <- doc_interaction_lrt$`Pr(>Chisq)`[2]
+if (!is.na(interaction_p_value) &&
+    interaction_p_value < INTERACTION_ALPHA) {
+
+  selected_structure <- "Interaction"
+
+  doc_final_model <- fit_doc(
+    stats::formula(doc_selected_interaction_ml),
+    reml = TRUE
+  )
+
+} else {
+
+  selected_structure <- "Additive"
+
+  doc_final_model <- fit_doc(
+    stats::formula(doc_selected_additive_ml),
+    reml = TRUE
+  )
+}
+
+doc_interaction_aic %>%
+  kable(digits = 3, caption = "Stage 2: interaction comparison")
+doc_interaction_lrt
+selected_erw_form
+selected_structure
+summary(doc_final_model)
+```
+
+# 7. Final results
+
+```{r final-results}
+doc_fixed_effects <- broom.mixed::tidy(
+  doc_final_model, effects = "fixed", conf.int = TRUE)
+doc_type2_tests <- as.data.frame(
+  anova(doc_final_model, type = 2, ddf = "Satterthwaite")) %>%
+  rownames_to_column("term") %>% clean_names()
+doc_random_effects <- broom.mixed::tidy(
+  doc_final_model, effects = "ran_pars")
+doc_model_audit <- tibble(
+  selected_erw_form, selected_structure, interaction_p_value,
+  n = nobs(doc_final_model),
+  zero_erw_n = sum(doc_model_data$ERW_level == 0),
+  singular_fit = lme4::isSingular(doc_final_model, tol = 1e-4))
+
+doc_fixed_effects %>%
+  kable(digits = 4, caption = paste("Final fixed effects:",
+                                    selected_erw_form, selected_structure))
+doc_type2_tests %>% kable(digits = 4, caption = "Final Type II tests")
+doc_model_audit %>% kable(digits = 4, caption = "Final-model audit")
+performance::r2_nakagawa(doc_final_model)
+```
+
+```{r trends-contrasts}
+if (selected_structure == "Interaction") {
+  doc_erw_trends <- emmeans::emtrends(
+    doc_final_model, ~ Water_type, var = selected_erw_var)
+  doc_erw_trend_contrast <- pairs(doc_erw_trends, adjust = "none")
+} else {
+  doc_erw_trends <- emmeans::emtrends(
+    doc_final_model, ~ 1, var = selected_erw_var)
+  doc_erw_trend_contrast <- NULL
+}
+
+doc_water_emmeans <- emmeans::emmeans(doc_final_model, ~ Water_type)
+doc_water_contrast <- pairs(doc_water_emmeans, adjust = "none")
+doc_erw_trends_table <- as.data.frame(
+  summary(doc_erw_trends, infer = c(TRUE, TRUE))) %>% clean_names()
+doc_erw_trend_contrast_table <- if (is.null(doc_erw_trend_contrast)) tibble() else
+  as.data.frame(summary(doc_erw_trend_contrast,
+                        infer = c(TRUE, TRUE))) %>% clean_names()
+doc_water_emmeans_table <- as.data.frame(
+  summary(doc_water_emmeans, infer = c(TRUE, TRUE))) %>% clean_names()
+doc_water_contrast_table <- as.data.frame(
+  summary(doc_water_contrast, infer = c(TRUE, TRUE))) %>% clean_names()
+
+doc_erw_trends_table %>%
+  kable(digits = 4, caption = paste("Estimated DOC trend using", selected_erw_form))
+doc_water_contrast_table %>%
+  kable(digits = 4, caption = "Adjusted DOC contrast between water types")
+```
+
+# 8. Diagnostics
+
+```{r diagnostics, fig.width=9, fig.height=8}
+old_par <- par(no.readonly = TRUE)
+on.exit(par(old_par), add = TRUE)
+par(mfrow = c(2, 2))
+doc_residuals <- resid(doc_final_model, type = "pearson")
+plot(fitted(doc_final_model), doc_residuals,
+     xlab = "Fitted values", ylab = "Pearson residuals",
+     main = "Residuals vs fitted")
+abline(h = 0, lty = 2)
+qqnorm(doc_residuals, main = "Normal Q–Q plot"); qqline(doc_residuals)
+hist(doc_residuals, main = "Residual distribution", xlab = "Pearson residual")
+plot(fitted(doc_final_model), sqrt(abs(doc_residuals)),
+     xlab = "Fitted values", ylab = expression(sqrt("|Pearson residual|")),
+     main = "Scale-location")
+```
+
+```{r diagnostic-statistics}
+performance::check_collinearity(doc_final_model)
+```
+
+# 9. Export
+
+```{r export}
+ggsave(file.path(params$output_dir, "DOC_main_figure.png"), p_doc_main,
+       width = 8, height = 5.5, dpi = 300)
+
+doc_interaction_lrt_table <- as.data.frame(doc_interaction_lrt) %>%
+  rownames_to_column("model") %>% clean_names()
+
+write_xlsx(
+  list(
+    cleaned_data = doc_data %>% mutate(across(where(is.factor), as.character)),
+    descriptive = doc_summary %>% mutate(Water_type = as.character(Water_type)),
+    model_ERW_counts = doc_model_counts %>%
+      mutate(Water_type = as.character(Water_type)),
+    ERW_form_AIC = doc_erw_form_comparison,
+    ERW_form_fixed = doc_erw_candidate_fixed,
+    ERW_form_type2 = doc_erw_candidate_type2,
+    interaction_AIC = doc_interaction_aic,
+    interaction_LRT = doc_interaction_lrt_table,
+    final_audit = doc_model_audit,
+    final_fixed = doc_fixed_effects,
+    final_type2 = doc_type2_tests,
+    final_random = doc_random_effects,
+    ERW_trends = doc_erw_trends_table,
+    ERW_trend_contrast = doc_erw_trend_contrast_table,
+    water_emmeans = doc_water_emmeans_table,
+    water_contrast = doc_water_contrast_table
+  ),
+  file.path(params$output_dir, "DOC_analysis_tables.xlsx"))
+
+saveRDS(doc_final_model,
+        file.path(params$output_dir, "DOC_final_model.rds"))
+```
+
+# 10. Session information
+
+```{r session-information}
+sessionInfo()
+```
