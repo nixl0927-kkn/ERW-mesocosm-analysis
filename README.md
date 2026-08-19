@@ -81,7 +81,7 @@ Packages only need to be installed once. The scripts load the required packages 
 1. Download or clone the complete repository. Keep the `code/` and `data/` folders in their current relative positions.
 2. Open the required file from the `code/` folder in RStudio.
 3. Knit each `.Rmd` file or run its code from top to bottom.
-4. Run `05_carbon_pool_overview.R` after checking that all four carbon data files are available.
+4. Run `carbon_pool_overview.R` after checking that all four carbon data files are available.
 5. Generated figures and tables will be written to subfolders within `outputs/`.
 
 Recommended order:
