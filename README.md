@@ -13,7 +13,7 @@ ERW-mesocosm-analysis/
 │   ├── DIC_analysis.Rmd
 │   ├── DOC_analysis.Rmd
 │   ├── particulate_carbon_analysis.Rmd
-│   └── carbon_pool_overview.R
+│   └── carbon_overview_first_week.R
 ├── data/
 │   ├── combined_do_light_data.csv
 │   ├── Meso_9_clean.xlsx
@@ -30,11 +30,11 @@ The `outputs/` directory is created automatically by the analysis scripts and co
 
 | Script | Description |
 |---|---|
-| `stream_metabolism.Rmd` | Calculates GPP and ER using three K600 approaches, compares their physiological signs and retained observations, and uses the fixed literature value K600 = 6.72 for the final GPP, ER and NEP figures and mixed-effects models. The corrected Mesocosm 9 dataset is incorporated here. |
+| `stream_metabolism_analysis.Rmd` | Calculates GPP and ER using three K600 approaches, compares their physiological signs and retained observations, and uses the fixed literature value K600 = 6.72 for the final GPP, ER and NEP figures and mixed-effects models. The corrected Mesocosm 9 dataset is incorporated here. |
 | `DIC_analysis.Rmd` | Analyses carbonate-derived dissolved inorganic carbon (DIC), including ERW functional-form selection, mixed-effects models, date-specific models and predictions. |
 | `DOC_analysis.Rmd` | Analyses dissolved organic carbon (DOC), compares raw and log1p ERW forms, tests the water-type interaction and reports the selected mixed-effects model. |
 | `particulate_carbon_analysis.Rmd` | Analyses benthic and pelagic particulate organic carbon (POC) and particulate inorganic carbon (PIC), including overall and date-specific models. |
-| `carbon_pool_overview.R` | Combines DIC, DOC, benthic POC/PIC and pelagic POC/PIC into a two-panel carbon-pool overview figure. |
+| `carbon_overview_first_week.R` | Combines DIC, DOC, benthic POC/PIC and pelagic POC/PIC into a two-panel carbon-pool overview figure. |
 
 ## Input data
 
@@ -87,11 +87,11 @@ Packages only need to be installed once. The scripts load the required packages 
 Recommended order:
 
 ```text
-stream_metabolism.Rmd
+stream_metabolism_analysis.Rmd
 DIC_analysis.Rmd
 DOC_analysis.Rmd
 particulate_carbon_analysis.Rmd
-carbon_pool_overview.R
+carbon_overview_first_week.R
 ```
 
 The scripts use paths such as `../data/filename.xlsx`, assuming that they are run from the `code/` directory.
