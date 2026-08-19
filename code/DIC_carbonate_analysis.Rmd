@@ -60,13 +60,7 @@ library(scales)
 # 3. Analysis settings
 
 ```{r settings}
-DATA_FILE_CANDIDATES <- c(
-  "ERW_IC_results_R_ready.xlsx",
-  file.path("data", "ERW_IC_results_R_ready.xlsx"),
-  "/Users/nixl/Documents/IC/dissertation/code/carbon/Dissolved/data/ERW_IC_results_R_ready.xlsx"
-)
-
-DATA_FILE <- DATA_FILE_CANDIDATES[file.exists(DATA_FILE_CANDIDATES)][1]
+DATA_FILE <- "../data/ERW_IC_results_R_ready.xlsx"
 
 if (is.na(DATA_FILE)) {
   stop(
@@ -85,7 +79,7 @@ WATER_COLOURS <- c("Ground" = "#0072B2", "River" = "#D55E00")
 WATER_LABELS <- c("Ground" = "Groundwater", "River" = "River water")
 WATER_SHAPES <- c("Ground" = 16, "River" = 17)
 
-OUTPUT_DIR <- "outputs_IC_ERW_form_comparison"
+OUTPUT_DIR <- "../outputs/DIC"
 dir.create(OUTPUT_DIR, showWarnings = FALSE)
 ```
 
