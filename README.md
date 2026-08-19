@@ -31,7 +31,7 @@ The `outputs/` directory is created automatically by the analysis scripts and co
 | Script | Description |
 |---|---|
 | `stream_metabolism_analysis.Rmd` | Calculates GPP and ER using three K600 approaches, compares their physiological signs and retained observations, and uses the fixed literature value K600 = 6.72 for the final GPP, ER and NEP figures and mixed-effects models. The corrected Mesocosm 9 dataset is incorporated here. |
-| `DIC_analysis.Rmd` | Analyses carbonate-derived dissolved inorganic carbon (DIC), including ERW functional-form selection, mixed-effects models, date-specific models and predictions. |
+| `DIC_analysis.Rmd` | Analyses carbonate-derived dissolved inorganic carbon (DIC), including ERW functional-form selection, compares raw and log1p ERW forms, mixed-effects models, date-specific models and predictions. |
 | `DOC_analysis.Rmd` | Analyses dissolved organic carbon (DOC), compares raw and log1p ERW forms, tests the water-type interaction and reports the selected mixed-effects model. |
 | `particulate_carbon_analysis.Rmd` | Analyses benthic and pelagic particulate organic carbon (POC) and particulate inorganic carbon (PIC), including overall and date-specific models. |
 | `carbon_overview_first_week.R` | Combines DIC, DOC, benthic POC/PIC and pelagic POC/PIC into a two-panel carbon-pool overview figure. |
