@@ -40,7 +40,7 @@ The `outputs/` directory is created automatically by the analysis scripts and co
 
 | File | Contents |
 |---|---|
-| `combined_do_light_data.csv` | Dissolved oxygen, temperature, light and mesocosm information used for stream-metabolism calculations. |
+| `combined_do_light_data.csv` | Dissolved oxygen, temperature, timestamps and mesocosm information used for stream-metabolism calculations. |
 | `Meso_9_clean.xlsx` | Corrected dissolved-oxygen and temperature records for Mesocosm 9. |
 | `ERW_IC_results_R_ready.xlsx` | Carbonate-derived inorganic carbon measurements. |
 | `ERW_DOC.xlsx` | Dissolved organic carbon measurements and experimental-design information. |
