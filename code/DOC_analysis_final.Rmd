@@ -10,9 +10,9 @@ output:
     code_folding: show
     theme: flatly
 params:
-  doc_data_file: "/Users/nixl/Documents/IC/dissertation/code/carbon/Dissolved/data/ERW_DOC.xlsx"
+  doc_data_file: "../data/ERW_DOC.xlsx"
   doc_data_sheet: 1
-  output_dir: "outputs/DOC_ERW_form_comparison"
+  output_dir: "../outputs/DOC"
 ---
 
 # Overview
