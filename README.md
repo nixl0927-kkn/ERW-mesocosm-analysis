@@ -1,8 +1,13 @@
 # ERW Mesocosm Analysis
 
-This repository contains the data and R code used to analyse carbon cycling and stream metabolism in an enhanced rock weathering (ERW) mesocosm experiment. The experiment compared six ERW application rates (0, 5, 10, 20, 50 and 100 t ha⁻¹) under groundwater and river water conditions.
+This repository contains the R code used to analyse carbon cycling and stream metabolism in an enhanced rock weathering (ERW) mesocosm experiment.
 
-The analyses cover stream metabolism (GPP, ER and NEP), dissolved inorganic and organic carbon, benthic and pelagic particulate carbon, and an overview of the measured carbon pools.
+The experiment investigated how different ERW application rates (0, 5, 10, 20, 50 and 100 t ha⁻¹) influenced freshwater carbon dynamics under groundwater and river water conditions. The analyses include stream metabolism (GPP, ER and NEP), dissolved inorganic carbon (DIC), dissolved organic carbon (DOC), benthic and pelagic particulate carbon pools, and an overview of measured carbon components.
+
+The associated experimental dataset is not included in this repository because it is part of an unpublished research project. Data availability will be updated following publication. For reasonable requests regarding data access, please contact:
+
+**Xinlin Ni**
+Email: [niiixl0927@gmail.com](mailto:niiixl0927@gmail.com)
 
 ## Repository structure
 
@@ -14,42 +19,31 @@ ERW-mesocosm-analysis/
 │   ├── DOC_analysis.Rmd
 │   ├── particulate_carbon_analysis.Rmd
 │   └── carbon_overview_first_week.R
-├── data/
-│   ├── combined_do_light_data.csv
-│   ├── Meso_9_clean.xlsx
-│   ├── ERW_IC_results_R_ready.xlsx
-│   ├── ERW_DOC.xlsx
-│   ├── benthic_carbon_mass.xlsx
-│   └── pelagic_carbon_mass.xlsx
-└── outputs/
+├── outputs/
+└── README.md
 ```
 
 The `outputs/` directory is created automatically by the analysis scripts and contains exported figures, tables and model results.
 
 ## Analysis scripts
 
-| Script | Description |
-|---|---|
-| `stream_metabolism_analysis.Rmd` | Calculates GPP and ER using three K600 approaches, compares their physiological signs and retained observations, and uses the fixed literature value K600 = 6.72 for the final GPP, ER and NEP figures and mixed-effects models. The corrected Mesocosm 9 dataset is incorporated here. |
-| `DIC_analysis.Rmd` | Analyses carbonate-derived dissolved inorganic carbon (DIC), including ERW functional-form selection, compares raw and log1p ERW forms, mixed-effects models, date-specific models and predictions. |
-| `DOC_analysis.Rmd` | Analyses dissolved organic carbon (DOC), compares raw and log1p ERW forms, tests the water-type interaction and reports the selected mixed-effects model. |
-| `particulate_carbon_analysis.Rmd` | Analyses benthic and pelagic particulate organic carbon (POC) and particulate inorganic carbon (PIC), including overall and date-specific models. |
-| `carbon_overview_first_week.R` | Combines DIC, DOC, benthic POC/PIC and pelagic POC/PIC into a two-panel carbon-pool overview figure. |
+| Script                            | Description                                                                                                                                                       |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `stream_metabolism_analysis.Rmd`  | Calculates GPP and ER using dissolved oxygen and light measurements, applies the selected K600 approach, and performs mixed-effects modelling of GPP, ER and NEP. |
+| `DIC_analysis.Rmd`                | Analyses dissolved inorganic carbon responses to ERW treatments, including model selection and mixed-effects modelling.                                           |
+| `DOC_analysis.Rmd`                | Analyses dissolved organic carbon responses to ERW treatments and water-source effects.                                                                           |
+| `particulate_carbon_analysis.Rmd` | Analyses benthic and pelagic particulate organic carbon (POC) and particulate inorganic carbon (PIC).                                                             |
+| `carbon_overview_first_week.R`    | Combines different carbon pools into an overview figure of carbon dynamics during the experiment.                                                                 |
 
-## Input data
+## Data availability
 
-| File | Contents |
-|---|---|
-| `combined_do_light_data.csv` | Dissolved oxygen, temperature, timestamps and mesocosm information used for stream-metabolism calculations. |
-| `Meso_9_clean.xlsx` | Corrected dissolved-oxygen and temperature records for Mesocosm 9. |
-| `ERW_IC_results_R_ready.xlsx` | Carbonate-derived inorganic carbon measurements. |
-| `ERW_DOC.xlsx` | Dissolved organic carbon measurements and experimental-design information. |
-| `benthic_carbon_mass.xlsx` | Benthic POC and PIC measurements. |
-| `pelagic_carbon_mass.xlsx` | Pelagic POC and PIC measurements. |
+Raw and processed experimental data are not provided in this repository because they are associated with an ongoing, unpublished research project.
+
+The analysis scripts require the corresponding datasets to reproduce the results. Data access may be considered upon reasonable request after appropriate review.
 
 ## R packages
 
-The analyses use the following packages:
+The analyses use the following R packages:
 
 ```r
 install.packages(c(
@@ -74,15 +68,14 @@ install.packages(c(
 ))
 ```
 
-Packages only need to be installed once. The scripts load the required packages at the beginning of each analysis.
+Packages only need to be installed once. Each script loads the required packages at the beginning of the analysis.
 
 ## Running the analyses
 
-1. Download or clone the complete repository. Keep the `code/` and `data/` folders in their current relative positions.
-2. Open the required file from the `code/` folder in RStudio.
-3. Knit each `.Rmd` file or run its code from top to bottom.
-4. Run `carbon_pool_overview.R` after checking that all four carbon data files are available.
-5. Generated figures and tables will be written to subfolders within `outputs/`.
+1. Clone or download this repository.
+2. Open the required script from the `code/` directory in RStudio.
+3. Provide access to the corresponding datasets in the expected file locations.
+4. Run each `.Rmd` file from top to bottom to reproduce the analyses and generate figures/tables.
 
 Recommended order:
 
@@ -94,9 +87,8 @@ particulate_carbon_analysis.Rmd
 carbon_overview_first_week.R
 ```
 
-The scripts use paths such as `../data/filename.xlsx`, assuming that they are run from the `code/` directory.
-
 ## Author
 
 Xinlin Ni
+
 
