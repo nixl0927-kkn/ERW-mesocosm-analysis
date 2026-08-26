@@ -44,64 +44,27 @@ CARBON_POOL_LEVELS <- c(
 
 # 3. Locate data files ----------------------------------------
 
-find_first_file <- function(candidates, label) {
-  
-  found <- candidates[file.exists(candidates)][1]
-  
-  if (is.na(found)) {
-    stop(
-      "Could not find ", label, ".\n",
-      "Place the file beside this R script/Rmd, inside a data/ folder, ",
-      "or update the file candidates."
-    )
-  }
-  
-  found
+IC_FILE <- "../data/ERW_IC_results_R_ready.xlsx"
+
+DOC_FILE <- "../data/ERW_DOC.xlsx"
+
+BENTHIC_FILE <- "../data/benthic_carbon_mass.xlsx"
+
+PELAGIC_FILE <- "../data/pelagic_carbon_mass.xlsx"
+
+input_files <- c(
+  IC_FILE,
+  DOC_FILE,
+  BENTHIC_FILE,
+  PELAGIC_FILE
+)
+
+if (any(!file.exists(input_files))) {
+  stop(
+    "Could not find: ",
+    paste(input_files[!file.exists(input_files)], collapse = ", ")
+  )
 }
-
-
-# Carbonate-derived inorganic carbon
-IC_FILE <- find_first_file(
-  c(
-    "ERW_IC_results_R_ready.xlsx",
-    file.path("data", "ERW_IC_results_R_ready.xlsx"),
-    "/Users/nixl/Documents/IC/dissertation/code/carbon/Dissolved/data/ERW_IC_results_R_ready.xlsx"
-  ),
-  "ERW_IC_results_R_ready.xlsx"
-)
-
-
-# Dissolved organic carbon
-DOC_FILE <- find_first_file(
-  c(
-    "ERW_DOC.xlsx",
-    file.path("data", "ERW_DOC.xlsx"),
-    "/Users/nixl/Documents/IC/dissertation/code/carbon/Dissolved/data/ERW_DOC.xlsx"
-  ),
-  "ERW_DOC.xlsx"
-)
-
-
-# Benthic particulate carbon
-BENTHIC_FILE <- find_first_file(
-  c(
-    "benthic_carbon_mass.xlsx",
-    file.path("data", "benthic_carbon_mass.xlsx"),
-    "/Users/nixl/Documents/IC/dissertation/code/carbon/Particulate/data/benthic_carbon_mass.xlsx"
-  ),
-  "benthic_carbon_mass.xlsx"
-)
-
-
-# Pelagic particulate carbon
-PELAGIC_FILE <- find_first_file(
-  c(
-    "pelagic_carbon_mass.xlsx",
-    file.path("data", "pelagic_carbon_mass.xlsx"),
-    "/Users/nixl/Documents/IC/dissertation/code/carbon/Particulate/data/pelagic_carbon_mass.xlsx"
-  ),
-  "pelagic_carbon_mass.xlsx"
-)
 
 
 # 4. Experimental design -------------------------------------
@@ -570,20 +533,19 @@ p_overview <- ggplot(
 p_overview
 
 
-c# 12. Save the figure ---------------------------------------------
+# 12. Save the figure -----------------------------------------
 
-setwd("/Users/nixl/Documents/IC/dissertation/code/version_2/250522_overview")
+OUTPUT_DIR <- "../outputs/overview"
 
 dir.create(
-  file.path("outputs", "figures"),
+  OUTPUT_DIR,
   recursive = TRUE,
   showWarnings = FALSE
 )
 
 ggsave(
   filename = file.path(
-    "outputs",
-    "figures",
+    OUTPUT_DIR,
     "carbon_pool_overview_two_panel.png"
   ),
   plot = p_overview,
