@@ -1,0 +1,1824 @@
+---
+title: "Particulate Carbon Analysis: ERW Functional-Form Comparison"
+author: "Xinlin Ni"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 7,
+  dpi = 300
+)
+```
+
+# 1. Analysis overview
+
+This workflow analyses particulate organic carbon (POC) and particulate
+inorganic carbon (PIC) in benthic and pelagic samples. All models include the
+0 t ha^-1 controls. For each response, centred raw ERW and centred
+`log1p(ERW)` are first compared in identical additive ML models. If
+\(\Delta\mathrm{AIC}<2\), raw ERW is selected; otherwise, the lower-AIC form
+is selected. The selected form is then used to test the
+`Water_type × ERW` interaction, and the final model is refitted by REML.
+
+The candidate overall models are:
+
+```r
+response_transformed ~ Water_type * erw_x +
+  (1 | block / Mesocosm) + (1 | Date)
+
+response_transformed ~ Water_type + erw_x +
+  (1 | block / Mesocosm) + (1 | Date)
+```
+
+Date-specific supplementary models inherit the selected ERW form and use:
+
+```r
+response_transformed ~ Water_type + erw_x + (1 | block)
+```
+
+POC is modelled as `log(POC)` and PIC as `log1p(PIC)`. PIC equals total carbon
+minus POC, with negative calculated values set to zero. The descriptive figure
+uses square-root x-axis spacing only for display.
+
+# 2. Packages
+
+```{r packages}
+library(tidyverse)
+library(readxl)
+library(janitor)
+library(lme4)
+library(lmerTest)
+library(broom.mixed)
+library(emmeans)
+library(performance)
+library(patchwork)
+library(knitr)
+
+options(contrasts = c("contr.treatment", "contr.poly"))
+```
+
+# 3. Settings
+
+```{r settings}
+BENTHIC_FILE_CANDIDATES <- c(
+  "benthic_carbon_mass.xlsx",
+  file.path("data", "benthic_carbon_mass.xlsx"),
+  "/Users/nixl/Documents/IC/dissertation/code/carbon/Particulate/data/benthic_carbon_mass.xlsx"
+)
+
+PELAGIC_FILE_CANDIDATES <- c(
+  "pelagic_carbon_mass.xlsx",
+  file.path("data", "pelagic_carbon_mass.xlsx"),
+  "/Users/nixl/Documents/IC/dissertation/code/carbon/Particulate/data/pelagic_carbon_mass.xlsx"
+)
+
+find_first_file <- function(candidates, label) {
+  found <- candidates[file.exists(candidates)][1]
+
+  if (is.na(found)) {
+    stop(
+      "Could not find ", label, ". Place it beside this Rmd, ",
+      "inside a data/ folder, or update the file candidates."
+    )
+  }
+
+  found
+}
+
+BENTHIC_FILE <- find_first_file(
+  BENTHIC_FILE_CANDIDATES,
+  "benthic_carbon_mass.xlsx"
+)
+
+PELAGIC_FILE <- find_first_file(
+  PELAGIC_FILE_CANDIDATES,
+  "pelagic_carbon_mass.xlsx"
+)
+
+OUTPUT_DIR <- "outputs_erw_form_comparison"
+FIGURE_DIR <- file.path(OUTPUT_DIR, "figures")
+
+dir.create(OUTPUT_DIR, recursive = TRUE, showWarnings = FALSE)
+dir.create(FIGURE_DIR, recursive = TRUE, showWarnings = FALSE)
+
+ERW_LEVELS <- c(0, 5, 10, 20, 50, 100)
+
+INTERACTION_ALPHA <- 0.05
+AIC_EQUIVALENCE_THRESHOLD <- 2
+
+WATER_COLOURS <- c(
+  "Ground" = "#0072B2",
+  "River" = "#D55E00"
+)
+
+WATER_LABELS <- c(
+  "Ground" = "Groundwater",
+  "River" = "River water"
+)
+
+WATER_SHAPES <- c(
+  "Ground" = 16,
+  "River" = 17
+)
+
+```
+
+# 4. Experimental design
+
+The same mesocosm design is used for both datasets. Mesocosms 1–6 belong to
+block 1, 7–12 to block 2, and so on.
+
+Pelagic samples collected on 19 May used 50 mL for every mesocosm. Samples
+collected from 22 May onwards use the recorded mesocosm-specific filtration
+volume.
+
+```{r design}
+design <- tribble(
+  ~Mesocosm, ~Water_type, ~ERW_level, ~volume_from_22_may_ml,
+  1,"Ground",5,240,    2,"Ground",50,240,   3,"Ground",10,300,
+  4,"Ground",0,360,    5,"Ground",20,300,   6,"Ground",100,300,
+  7,"River",10,300,    8,"River",20,300,    9,"River",0,240,
+  10,"River",100,300, 11,"River",50,300,   12,"River",5,300,
+  13,"River",100,300, 14,"River",0,240,    15,"River",5,300,
+  16,"River",20,300,  17,"River",10,240,   18,"River",50,300,
+  19,"Ground",20,300, 20,"Ground",100,300, 21,"Ground",5,240,
+  22,"Ground",0,240,  23,"Ground",10,300,  24,"Ground",50,300,
+  25,"Ground",0,300,  26,"Ground",50,300,  27,"Ground",10,300,
+  28,"Ground",100,300,29,"Ground",20,300,  30,"Ground",5,300,
+  31,"River",20,300,  32,"River",100,300,  33,"River",5,240,
+  34,"River",50,300,  35,"River",0,300,    36,"River",10,240
+) %>%
+  mutate(
+    Water_type = factor(
+      Water_type,
+      levels = c("Ground", "River")
+    ),
+    ERW_level = as.numeric(ERW_level),
+    block = factor((Mesocosm - 1) %/% 6 + 1)
+  )
+
+stopifnot(
+  nrow(design) == 36,
+  setequal(design$ERW_level, ERW_LEVELS)
+)
+```
+
+# 5. Data-processing functions
+
+```{r processing-functions}
+read_carbon_file <- function(path, compartment) {
+  read_excel(path) %>%
+    clean_names() %>%
+    transmute(
+      sample_name,
+      Mesocosm = as.integer(mesocosm),
+      sample_date = as.Date(date),
+      carbon_percent = as.numeric(carbon_percent),
+      mass_carbon_whole_filter_mg =
+        as.numeric(mass_of_organic_carbon_in_whole_filters_mg),
+      fraction = if_else(
+        str_detect(str_to_upper(sample_name), "POC"),
+        "POC",
+        "TC"
+      ),
+      compartment = compartment,
+      sample_status = if_else(
+        is.na(carbon_percent) |
+          is.na(mass_carbon_whole_filter_mg),
+        "missing_or_not_measured",
+        "measured"
+      )
+    )
+}
+
+prepare_carbon_data <- function(raw_data, compartment) {
+  measured <- raw_data %>%
+    filter(sample_status == "measured") %>%
+    left_join(
+      design,
+      by = c("Mesocosm" = "Mesocosm")
+    ) %>%
+    mutate(
+      Mesocosm = factor(Mesocosm),
+      volume_ml = case_when(
+        compartment == "Pelagic" &
+          sample_date == as.Date("2025-05-19") ~ 50,
+        TRUE ~ volume_from_22_may_ml
+      ),
+      conc_mg_L =
+        mass_carbon_whole_filter_mg / volume_ml * 1000
+    )
+
+  wide <- measured %>%
+    select(
+      compartment,
+      Mesocosm,
+      block,
+      sample_date,
+      Water_type,
+      ERW_level,
+      fraction,
+      conc_mg_L
+    ) %>%
+    pivot_wider(
+      names_from = fraction,
+      values_from = conc_mg_L,
+      names_prefix = "conc_"
+    ) %>%
+    mutate(
+      POC_exceeds_TC = conc_POC > conc_TC,
+      PIC_raw = conc_TC - conc_POC,
+      PIC_conc = pmax(PIC_raw, 0),
+      sample_date_f = factor(
+        sample_date,
+        levels = sort(unique(sample_date))
+      ),
+      Water_type = factor(
+        Water_type,
+        levels = c("Ground", "River")
+      ),
+      ERW_level = as.numeric(ERW_level),
+      block = factor(block),
+      Mesocosm = factor(Mesocosm)
+    ) %>%
+    arrange(
+      sample_date,
+      Water_type,
+      ERW_level,
+      Mesocosm
+    )
+
+  wide
+}
+```
+
+# 6. Import and prepare data
+
+```{r import-prepare}
+message(
+  "Reading benthic data from: ",
+  normalizePath(BENTHIC_FILE)
+)
+
+message(
+  "Reading pelagic data from: ",
+  normalizePath(PELAGIC_FILE)
+)
+
+benthic_raw <- read_carbon_file(
+  BENTHIC_FILE,
+  "Benthic"
+)
+
+pelagic_raw <- read_carbon_file(
+  PELAGIC_FILE,
+  "Pelagic"
+)
+
+benthic_wide <- prepare_carbon_data(
+  benthic_raw,
+  "Benthic"
+)
+
+pelagic_wide <- prepare_carbon_data(
+  pelagic_raw,
+  "Pelagic"
+)
+
+particulate_wide <- bind_rows(
+  benthic_wide,
+  pelagic_wide
+)
+```
+
+# 7. Data checks
+
+## 7.1 Join and block checks
+
+```{r join-block-checks}
+particulate_wide %>%
+  summarise(
+    missing_water_type = sum(is.na(Water_type)),
+    missing_erw = sum(is.na(ERW_level)),
+    missing_block = sum(is.na(block)),
+    missing_mesocosm = sum(is.na(Mesocosm))
+  )
+
+particulate_wide %>%
+  distinct(Mesocosm, block) %>%
+  arrange(as.integer(as.character(Mesocosm)))
+```
+
+## 7.2 Missing or unmeasured samples
+
+```{r missing-samples}
+missing_samples <- bind_rows(
+  benthic_raw,
+  pelagic_raw
+) %>%
+  filter(sample_status != "measured") %>%
+  arrange(
+    compartment,
+    sample_date,
+    fraction,
+    Mesocosm
+  )
+
+missing_samples
+```
+
+## 7.3 Completeness
+
+```{r completeness}
+completeness_table <- bind_rows(
+  benthic_raw,
+  pelagic_raw
+) %>%
+  count(
+    compartment,
+    sample_date,
+    fraction,
+    sample_status
+  ) %>%
+  pivot_wider(
+    names_from = sample_status,
+    values_from = n,
+    values_fill = 0
+  ) %>%
+  arrange(
+    compartment,
+    sample_date,
+    fraction
+  )
+
+kable(completeness_table)
+```
+
+## 7.4 PIC calculation checks
+
+```{r pic-checks}
+pic_checks <- particulate_wide %>%
+  group_by(compartment, sample_date) %>%
+  summarise(
+    total_rows = n(),
+    missing_POC = sum(is.na(conc_POC)),
+    missing_TC = sum(is.na(conc_TC)),
+    missing_PIC = sum(is.na(PIC_conc)),
+    POC_greater_than_TC =
+      sum(POC_exceeds_TC, na.rm = TRUE),
+    zero_PIC_after_truncation =
+      sum(PIC_conc == 0, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+kable(pic_checks)
+```
+
+```{r inspect-negative-pic}
+particulate_wide %>%
+  filter(POC_exceeds_TC %in% TRUE) %>%
+  select(
+    compartment,
+    Mesocosm,
+    block,
+    sample_date,
+    Water_type,
+    ERW_level,
+    conc_POC,
+    conc_TC,
+    PIC_raw,
+    PIC_conc
+  )
+```
+
+# 8. Descriptive summaries and plots
+
+```{r descriptive-functions}
+carbon_summary <- function(data, response) {
+  data %>%
+    filter(!is.na(.data[[response]])) %>%
+    group_by(
+      sample_date,
+      Water_type,
+      ERW_level
+    ) %>%
+    summarise(
+      n = n(),
+      mean = mean(
+        .data[[response]],
+        na.rm = TRUE
+      ),
+      sd = sd(
+        .data[[response]],
+        na.rm = TRUE
+      ),
+      .groups = "drop"
+    )
+}
+
+plot_raw_mean_sd <- function(
+    data,
+    response,
+    y_label,
+    title
+) {
+
+  plot_data <- data %>%
+    filter(!is.na(.data[[response]])) %>%
+    mutate(
+      x_plot = sqrt(ERW_level) +
+        if_else(
+          Water_type == "Ground",
+          -0.10,
+          0.10
+        )
+    )
+
+  summary_data <- carbon_summary(
+    data = data,
+    response = response
+  ) %>%
+    mutate(
+      x_plot = sqrt(ERW_level) +
+        if_else(
+          Water_type == "Ground",
+          -0.10,
+          0.10
+        )
+    )
+
+  ggplot(
+    data = plot_data,
+    mapping = aes(
+      x = x_plot,
+      y = .data[[response]],
+      colour = Water_type,
+      shape = Water_type,
+      group = Water_type
+    )
+  ) +
+
+    geom_point(
+      position = position_jitter(
+        width = 0.035,
+        height = 0,
+        seed = 123
+      ),
+      size = 2,
+      alpha = 0.45
+    ) +
+
+    geom_line(
+      data = summary_data,
+      mapping = aes(
+        x = x_plot,
+        y = mean,
+        colour = Water_type,
+        group = Water_type
+      ),
+      linewidth = 0.8,
+      alpha = 0.9
+    ) +
+
+    geom_point(
+      data = summary_data,
+      mapping = aes(
+        x = x_plot,
+        y = mean
+      ),
+      size = 3,
+      stroke = 0.8
+    ) +
+
+    geom_errorbar(
+      data = summary_data,
+      mapping = aes(
+        x = x_plot,
+        y = mean,
+        ymin = pmax(mean - sd, 0),
+        ymax = mean + sd
+      ),
+      width = 0.12,
+      linewidth = 0.7,
+      na.rm = TRUE
+    ) +
+
+    facet_wrap(
+      ~ sample_date,
+      nrow = 1,
+      labeller = labeller(
+        sample_date = function(x) {
+          format(
+            as.Date(x),
+            "%Y-%m-%d"
+          )
+        }
+      )
+    ) +
+
+    scale_x_continuous(
+      breaks = sqrt(ERW_LEVELS),
+      labels = ERW_LEVELS,
+      minor_breaks = NULL,
+      expand = expansion(
+        mult = c(0.04, 0.07)
+      )
+    ) +
+
+    scale_colour_manual(
+      values = WATER_COLOURS,
+      labels = WATER_LABELS
+    ) +
+
+    scale_shape_manual(
+      values = WATER_SHAPES,
+      labels = WATER_LABELS
+    ) +
+
+    labs(
+      x = expression("ERW application (" * t ~ ha^{-1} * ")"),
+      y = y_label,
+      colour = "Water type",
+      shape = "Water type",
+      title = title,
+      subtitle = paste(
+        "Small points: raw observations;",
+        "connected large points and error bars: mean ± SD"
+      )
+    ) +
+
+    theme_classic() +
+
+    theme(
+      legend.position = "right",
+      legend.direction = "vertical",
+      strip.background = element_rect(
+        fill = "grey95",
+        colour = "grey70",
+        linewidth = 0.5
+      ),
+      strip.text = element_text(
+        face = "bold"
+      )
+    )
+}
+
+```
+
+## 8.1 Combined benthic and pelagic figure
+
+```{r benthic-plots, fig.width=11, fig.height=10}
+p_benthic_poc <- plot_raw_mean_sd(
+  benthic_wide,
+  "conc_POC",
+  expression(
+    "POC (mg C L"^{-1}*")"
+  ),
+  "Benthic particulate organic carbon"
+)
+
+p_benthic_pic <- plot_raw_mean_sd(
+  benthic_wide,
+  "PIC_conc",
+  expression(
+    "PIC (mg C L"^{-1}*")"
+  ),
+  "Benthic particulate inorganic carbon"
+)
+
+large_text_theme <- theme(
+  axis.title = element_text(size = 16, face = "bold"),
+  axis.text = element_text(size = 14),
+  strip.text = element_text(size = 14, face = "bold"),
+  legend.title = element_text(size = 14),
+  legend.text = element_text(size = 14)
+)
+
+p_benthic_poc <- p_benthic_poc + large_text_theme
+p_benthic_pic <- p_benthic_pic + large_text_theme
+
+p_benthic_combined <-
+  (
+    (p_benthic_poc +
+       labs(title = NULL, subtitle = NULL, x = NULL) +
+       theme(axis.title.x = element_blank())) /
+    
+    (p_benthic_pic +
+       labs(title = NULL, subtitle = NULL, x = NULL) +
+       theme(
+         axis.title.x = element_blank(),
+         strip.text.x = element_blank(),
+         strip.background = element_blank()
+       ))
+  ) +
+   plot_layout(guides = "collect") +
+  plot_annotation(
+    title = "(a)",
+    theme = theme(
+      plot.title = element_text(
+        hjust = 0.05,
+        size = 16,
+        face = "bold"
+      )
+    )
+  ) &
+  theme(legend.position = "none")
+```
+
+```{r pelagic-plots, fig.width=24, fig.height=10}
+p_pelagic_poc <- plot_raw_mean_sd(
+  pelagic_wide,
+  "conc_POC",
+  expression(
+    "Pelagic POC (mg C L"^{-1}*")"
+  ),
+  "Pelagic particulate organic carbon"
+)
+
+p_pelagic_pic <- plot_raw_mean_sd(
+  pelagic_wide,
+  "PIC_conc",
+  expression(
+    "Pelagic PIC (mg C L"^{-1}*")"
+  ),
+  "Pelagic particulate inorganic carbon"
+)
+
+
+p_pelagic_poc <- p_pelagic_poc + large_text_theme
+p_pelagic_pic <- p_pelagic_pic + large_text_theme
+
+p_pelagic_combined <-
+  (
+    (p_pelagic_poc +
+       labs(title = NULL, subtitle = NULL, x = NULL, y = NULL) +
+       theme(
+         axis.title.x = element_blank(),
+         axis.title.y = element_blank()
+       )) /
+    
+    (p_pelagic_pic +
+       labs(title = NULL, subtitle = NULL, x = NULL, y = NULL) +
+       theme(
+         axis.title.x = element_blank(),
+         axis.title.y = element_blank(),
+         strip.text.x = element_blank(),
+         strip.background = element_blank()
+       ))
+  ) +
+  plot_layout(guides = "collect") +
+  plot_annotation(
+    title = "(b)",
+    theme = theme(
+      plot.title = element_text(
+        hjust = 0.03,
+        size = 16,
+        face = "bold"
+      )
+    )
+  ) &
+  theme(legend.position = "right")
+
+p_particulate_mean_sd_combined <-
+  (
+    wrap_elements(full = p_benthic_combined) |
+    wrap_elements(full = p_pelagic_combined)
+  ) +
+  plot_layout(widths = c(1, 1.17)) +
+  plot_annotation(
+    caption = expression("ERW application (" * t ~ ha^{-1} * ")"),
+    theme = theme(
+      plot.caption = element_text(
+        hjust = 0.5,
+        size = 16,
+        margin = margin(t = 8)
+      )
+    )
+  )
+
+p_particulate_mean_sd_combined
+```
+
+## 8.2 Control means
+
+```{r control-means}
+control_carbon_means <- bind_rows(
+  benthic_wide,
+  pelagic_wide
+) %>%
+  filter(ERW_level == 0) %>%
+  summarise(
+    mean_control_POC = mean(conc_POC, na.rm = TRUE),
+    mean_control_PIC = mean(PIC_conc, na.rm = TRUE)
+  )
+
+control_carbon_means
+```
+
+# 9. Mixed-model functions
+
+```{r model-functions}
+prepare_model_data <- function(
+    data,
+    response,
+    transform = c("log", "log1p")
+) {
+  transform <- match.arg(transform)
+
+  model_data <- data %>%
+    filter(!is.na(.data[[response]]))
+
+  if (
+    transform == "log" &&
+    any(model_data[[response]] <= 0, na.rm = TRUE)
+  ) {
+    stop(
+      response,
+      " contains zero or negative values and cannot use log()."
+    )
+  }
+
+  model_data %>%
+    mutate(
+      response_transformed = case_when(
+        transform == "log" ~
+          log(.data[[response]]),
+        transform == "log1p" ~
+          log1p(.data[[response]])
+      ),
+      Water_type = droplevels(Water_type),
+      sample_date_f = droplevels(sample_date_f),
+      block = droplevels(block),
+      Mesocosm = droplevels(Mesocosm)
+    )
+}
+
+fit_overall_models <- function(
+    data,
+    response,
+    transform,
+    compartment,
+    erw_form = c("raw", "log1p")
+) {
+  erw_form <- match.arg(erw_form)
+
+  dat <- prepare_model_data(
+    data,
+    response,
+    transform
+  ) %>%
+    mutate(
+      erw_x = if (erw_form == "raw") {
+        ERW_level - mean(ERW_level, na.rm = TRUE)
+      } else {
+        log1p(ERW_level) -
+          mean(log1p(ERW_level), na.rm = TRUE)
+      }
+    )
+
+  full_ml <- lmer(
+    response_transformed ~
+      Water_type * erw_x +
+      (1 | block / Mesocosm) +
+      (1 | sample_date_f),
+    data = dat,
+    REML = FALSE,
+    na.action = na.exclude,
+    control = lmerControl(
+      optimizer = "bobyqa"
+    )
+  )
+
+  additive_ml <- lmer(
+    response_transformed ~
+      Water_type +
+      erw_x +
+      (1 | block / Mesocosm) +
+      (1 | sample_date_f),
+    data = dat,
+    REML = FALSE,
+    na.action = na.exclude,
+    control = lmerControl(
+      optimizer = "bobyqa"
+    )
+  )
+
+  comparison <- anova(
+    additive_ml,
+    full_ml
+  )
+
+  interaction_p <-
+    comparison$`Pr(>Chisq)`[2]
+
+  selected_structure <- if (
+    is.na(interaction_p) ||
+      interaction_p >= INTERACTION_ALPHA
+  ) {
+    "additive"
+  } else {
+    "interaction"
+  }
+
+  selected_ml <- if (
+    selected_structure == "additive"
+  ) {
+    additive_ml
+  } else {
+    full_ml
+  }
+
+  final_model <- update(
+    selected_ml,
+    REML = TRUE
+  )
+
+  list(
+    compartment = compartment,
+    response = response,
+    transform = transform,
+    erw_form = erw_form,
+    data = dat,
+    full_ml = full_ml,
+    additive_ml = additive_ml,
+    comparison = comparison,
+    interaction_p = interaction_p,
+    selected_structure = selected_structure,
+    selected_ml = selected_ml,
+    final_model = final_model
+  )
+}
+
+fit_daily_models <- function(
+    data,
+    response,
+    transform,
+    compartment,
+    erw_form = c("raw", "log1p")
+) {
+  erw_form <- match.arg(erw_form)
+
+  dat <- prepare_model_data(
+    data,
+    response,
+    transform
+  ) %>%
+    mutate(
+      erw_x = if (erw_form == "raw") {
+        ERW_level - mean(ERW_level, na.rm = TRUE)
+      } else {
+        log1p(ERW_level) -
+          mean(log1p(ERW_level), na.rm = TRUE)
+      }
+    )
+
+  dat %>%
+    group_by(
+      sample_date,
+      sample_date_f
+    ) %>%
+    nest() %>%
+    mutate(
+      compartment = compartment,
+      response = response,
+      transform = transform,
+      erw_form = erw_form,
+      selected_structure = "additive",
+      model = map(
+        data,
+        ~ lmer(
+            response_transformed ~
+              Water_type +
+              erw_x +
+              (1 | block),
+            data = .x,
+            REML = TRUE,
+            na.action = na.exclude,
+            control = lmerControl(
+              optimizer = "bobyqa"
+            )
+          )
+      )
+    ) %>%
+    ungroup()
+}
+
+safe_type2_anova <- function(model) {
+  anova(
+    model,
+    type = 2,
+    ddf = "Satterthwaite"
+  ) %>%
+    as.data.frame() %>%
+    rownames_to_column("term") %>%
+    clean_names()
+}
+
+extract_overall_outputs <- function(fit) {
+  final_model <- fit$final_model
+
+  list(
+    comparison =
+      as.data.frame(fit$comparison) %>%
+      rownames_to_column("candidate_model") %>%
+      clean_names() %>%
+      mutate(
+        compartment = fit$compartment,
+        response = fit$response,
+        erw_form = fit$erw_form,
+        selected_structure =
+          fit$selected_structure,
+        interaction_p =
+          fit$interaction_p,
+        .before = 1
+      ),
+
+    type2 =
+      safe_type2_anova(final_model) %>%
+      mutate(
+        compartment = fit$compartment,
+        response = fit$response,
+        erw_form = fit$erw_form,
+        selected_structure =
+          fit$selected_structure,
+        .before = 1
+      ),
+
+    fixed =
+      broom.mixed::tidy(
+        final_model,
+        effects = "fixed",
+        conf.int = TRUE
+      ) %>%
+      mutate(
+        compartment = fit$compartment,
+        response = fit$response,
+        erw_form = fit$erw_form,
+        selected_structure =
+          fit$selected_structure,
+        .before = 1
+      ),
+
+    random =
+      broom.mixed::tidy(
+        final_model,
+        effects = "ran_pars",
+        conf.int = TRUE
+      ) %>%
+      mutate(
+        compartment = fit$compartment,
+        response = fit$response,
+        erw_form = fit$erw_form,
+        selected_structure =
+          fit$selected_structure,
+        .before = 1
+      ),
+
+    fit =
+      broom.mixed::glance(final_model) %>%
+      mutate(
+        compartment = fit$compartment,
+        response = fit$response,
+        erw_form = fit$erw_form,
+        selected_structure =
+          fit$selected_structure,
+        interaction_p =
+          fit$interaction_p,
+        singular =
+          performance::check_singularity(
+            final_model
+          ),
+        .before = 1
+      )
+  )
+}
+
+extract_daily_outputs <- function(daily_models) {
+  model_fit <- daily_models %>%
+    transmute(
+      compartment,
+      response,
+      erw_form,
+      sample_date,
+      sample_date_f,
+      selected_structure,
+      model
+    ) %>%
+    mutate(
+      model_fit = map(
+        model,
+        broom.mixed::glance
+      )
+    ) %>%
+    select(-model) %>%
+    unnest(model_fit)
+
+  coefficients <- daily_models %>%
+    transmute(
+      compartment,
+      response,
+      erw_form,
+      sample_date,
+      sample_date_f,
+      selected_structure,
+      model
+    ) %>%
+    mutate(
+      coefficients = map(
+        model,
+        ~ broom.mixed::tidy(
+            .x,
+            effects = "fixed",
+            conf.int = TRUE
+          )
+      )
+    ) %>%
+    select(-model) %>%
+    unnest(coefficients)
+
+  term_tests <- daily_models %>%
+    transmute(
+      compartment,
+      response,
+      erw_form,
+      sample_date,
+      sample_date_f,
+      selected_structure,
+      model
+    ) %>%
+    mutate(
+      term_tests = map(
+        model,
+        safe_type2_anova
+      )
+    ) %>%
+    select(-model) %>%
+    unnest(term_tests) %>%
+    group_by(
+      compartment,
+      response,
+      erw_form,
+      term
+    ) %>%
+    mutate(
+      p_value_fdr =
+        p.adjust(pr_f, method = "BH")
+    ) %>%
+    ungroup()
+
+  erw_coefficients <- coefficients %>%
+    filter(
+      term == "erw_x"
+    ) %>%
+    group_by(
+      compartment,
+      response,
+      erw_form,
+      term
+    ) %>%
+    mutate(
+      p_value_fdr =
+        p.adjust(.data$p.value, method = "BH")
+    ) %>%
+    ungroup()
+
+  checks <- daily_models %>%
+    transmute(
+      compartment,
+      response,
+      erw_form,
+      sample_date,
+      sample_date_f,
+      selected_structure,
+      singular = map_lgl(
+        model,
+        performance::check_singularity
+      )
+    )
+
+  list(
+    model_fit = model_fit,
+    coefficients = coefficients,
+    term_tests = term_tests,
+    erw_coefficients = erw_coefficients,
+    checks = checks
+  )
+}
+```
+
+# 10. Select ERW form, then test the interaction
+
+For each response, raw ERW and `log1p(ERW)` are first compared using identical
+additive models. Both forms use exactly the same observations and response
+transformation, and both include the zero-ERW controls. After the ERW form has
+been selected, the additive and water-type interaction structures are compared
+only for that selected form.
+
+```{r erw-form-selection-functions}
+fit_additive_erw_form_ml <- function(
+    data,
+    response,
+    transform,
+    compartment,
+    erw_form = c("raw", "log1p")
+) {
+  erw_form <- match.arg(erw_form)
+
+  dat <- prepare_model_data(
+    data,
+    response,
+    transform
+  ) %>%
+    mutate(
+      erw_x = if (erw_form == "raw") {
+        ERW_level - mean(ERW_level, na.rm = TRUE)
+      } else {
+        log1p(ERW_level) -
+          mean(log1p(ERW_level), na.rm = TRUE)
+      }
+    )
+
+  model <- lmer(
+    response_transformed ~
+      Water_type +
+      erw_x +
+      (1 | block / Mesocosm) +
+      (1 | sample_date_f),
+    data = dat,
+    REML = FALSE,
+    na.action = na.exclude,
+    control = lmerControl(
+      optimizer = "bobyqa"
+    )
+  )
+
+  list(
+    compartment = compartment,
+    response = response,
+    transform = transform,
+    erw_form = erw_form,
+    data = dat,
+    model = model
+  )
+}
+
+fit_both_erw_forms <- function(
+    data,
+    response,
+    transform,
+    compartment
+) {
+  raw_candidate <- fit_additive_erw_form_ml(
+    data = data,
+    response = response,
+    transform = transform,
+    compartment = compartment,
+    erw_form = "raw"
+  )
+
+  log1p_candidate <- fit_additive_erw_form_ml(
+    data = data,
+    response = response,
+    transform = transform,
+    compartment = compartment,
+    erw_form = "log1p"
+  )
+
+  candidates <- list(
+    raw = raw_candidate,
+    log1p = log1p_candidate
+  )
+
+  comparison <- imap_dfr(
+    candidates,
+    function(fit, form_name) {
+      tibble(
+        compartment = fit$compartment,
+        response = fit$response,
+        response_transform = fit$transform,
+        erw_form = form_name,
+        fixed_structure = "Water_type + ERW",
+        n = nobs(fit$model),
+        logLik = as.numeric(logLik(fit$model)),
+        AIC = AIC(fit$model),
+        BIC = BIC(fit$model)
+      )
+    }
+  ) %>%
+    arrange(AIC) %>%
+    mutate(delta_AIC = AIC - min(AIC))
+
+  aic_difference <- diff(range(comparison$AIC))
+
+  selected_form <- if (
+    aic_difference < AIC_EQUIVALENCE_THRESHOLD
+  ) {
+    "raw"
+  } else {
+    comparison$erw_form[which.min(comparison$AIC)]
+  }
+
+  comparison <- comparison %>%
+    mutate(
+      selected_final = erw_form == selected_form,
+      selection_rule = if_else(
+        aic_difference < AIC_EQUIVALENCE_THRESHOLD,
+        "Delta AIC < 2: raw ERW preferred for simpler interpretation",
+        "Delta AIC >= 2: lowest-AIC ERW form selected"
+      )
+    )
+
+  # Only after selecting the ERW form do we test the interaction.
+  selected_fit <- fit_overall_models(
+    data = data,
+    response = response,
+    transform = transform,
+    compartment = compartment,
+    erw_form = selected_form
+  )
+
+  list(
+    candidates = candidates,
+    comparison = comparison,
+    selected_form = selected_form,
+    selected_fit = selected_fit
+  )
+}
+```
+
+```{r overall-models}
+forms_benthic_poc <- fit_both_erw_forms(
+  benthic_wide,
+  response = "conc_POC",
+  transform = "log",
+  compartment = "Benthic"
+)
+
+forms_benthic_pic <- fit_both_erw_forms(
+  benthic_wide,
+  response = "PIC_conc",
+  transform = "log1p",
+  compartment = "Benthic"
+)
+
+forms_pelagic_poc <- fit_both_erw_forms(
+  pelagic_wide,
+  response = "conc_POC",
+  transform = "log",
+  compartment = "Pelagic"
+)
+
+forms_pelagic_pic <- fit_both_erw_forms(
+  pelagic_wide,
+  response = "PIC_conc",
+  transform = "log1p",
+  compartment = "Pelagic"
+)
+
+erw_form_fit_sets <- list(
+  benthic_POC = forms_benthic_poc,
+  benthic_PIC = forms_benthic_pic,
+  pelagic_POC = forms_pelagic_poc,
+  pelagic_PIC = forms_pelagic_pic
+)
+
+erw_form_comparison <- imap_dfr(
+  erw_form_fit_sets,
+  ~ .x$comparison %>% mutate(outcome = .y, .before = 1)
+)
+
+erw_form_comparison
+
+erw_form_candidate_fixed_effects <- imap_dfr(
+  erw_form_fit_sets,
+  function(form_set, outcome_name) {
+    imap_dfr(
+      form_set$candidates,
+      function(candidate, form_name) {
+        broom.mixed::tidy(
+          candidate$model,
+          effects = "fixed",
+          conf.int = TRUE
+        ) %>%
+          mutate(
+            outcome = outcome_name,
+            compartment = candidate$compartment,
+            response = candidate$response,
+            response_transform = candidate$transform,
+            erw_form = form_name,
+            .before = 1
+          )
+      }
+    )
+  }
+)
+
+erw_form_candidate_type2_tests <- imap_dfr(
+  erw_form_fit_sets,
+  function(form_set, outcome_name) {
+    imap_dfr(
+      form_set$candidates,
+      function(candidate, form_name) {
+        safe_type2_anova(candidate$model) %>%
+          mutate(
+            outcome = outcome_name,
+            compartment = candidate$compartment,
+            response = candidate$response,
+            response_transform = candidate$transform,
+            erw_form = form_name,
+            .before = 1
+          )
+      }
+    )
+  }
+)
+
+erw_form_candidate_fixed_effects
+erw_form_candidate_type2_tests
+
+# These selected fits are used by every downstream overall and daily analysis.
+fit_benthic_poc <- forms_benthic_poc$selected_fit
+fit_benthic_pic <- forms_benthic_pic$selected_fit
+fit_pelagic_poc <- forms_pelagic_poc$selected_fit
+fit_pelagic_pic <- forms_pelagic_pic$selected_fit
+
+overall_fits <- list(
+  benthic_POC = fit_benthic_poc,
+  benthic_PIC = fit_benthic_pic,
+  pelagic_POC = fit_pelagic_poc,
+  pelagic_PIC = fit_pelagic_pic
+)
+
+selected_model_treatment_balance <- imap_dfr(
+  overall_fits,
+  ~ .x$data %>%
+    count(ERW_level, name = "n") %>%
+    mutate(outcome = .y, .before = 1)
+)
+
+if (
+  any(
+    !map_lgl(
+      overall_fits,
+      ~ any(.x$data$ERW_level == 0, na.rm = TRUE)
+    )
+  )
+) {
+  stop("A selected model dataset does not contain the 0 t ha^-1 control.")
+}
+
+selected_model_treatment_balance
+```
+
+## 10.1 Interaction-model comparisons
+
+```{r overall-model-comparisons}
+overall_model_comparison <- imap_dfr(
+  overall_fits,
+  ~ extract_overall_outputs(.x)$comparison
+)
+
+overall_model_comparison
+```
+
+## 10.2 Final model summaries
+
+```{r final-model-summaries}
+summary(
+  fit_benthic_poc$final_model
+)
+
+summary(
+  fit_benthic_pic$final_model
+)
+
+summary(
+  fit_pelagic_poc$final_model
+)
+
+summary(
+  fit_pelagic_pic$final_model
+)
+```
+
+## 10.3 Type II tests
+
+```{r overall-type2}
+overall_type2_tests <- imap_dfr(
+  overall_fits,
+  ~ extract_overall_outputs(.x)$type2
+)
+
+overall_type2_tests
+```
+
+## 10.4 Fixed and random effects
+
+```{r overall-effects}
+overall_fixed_effects <- imap_dfr(
+  overall_fits,
+  ~ extract_overall_outputs(.x)$fixed
+)
+
+overall_random_effects <- imap_dfr(
+  overall_fits,
+  ~ extract_overall_outputs(.x)$random
+)
+
+overall_fixed_effects
+overall_random_effects
+```
+
+## 10.5 Model-fit information
+
+```{r overall-fit}
+overall_model_fit <- imap_dfr(
+  overall_fits,
+  ~ extract_overall_outputs(.x)$fit
+)
+
+overall_model_fit
+```
+
+# 11. Estimated trends and predictions
+
+```{r prediction-functions}
+make_prediction_grid <- function(fit) {
+  dat <- fit$data
+  model <- fit$final_model
+
+  newdata <- expand_grid(
+    ERW_level = ERW_LEVELS,
+    Water_type = levels(dat$Water_type),
+    sample_date_f = levels(dat$sample_date_f)[1]
+  ) %>%
+    mutate(
+      erw_x = if (fit$erw_form == "raw") {
+        ERW_level - mean(dat$ERW_level, na.rm = TRUE)
+      } else {
+        log1p(ERW_level) -
+          mean(log1p(dat$ERW_level), na.rm = TRUE)
+      },
+      Water_type = factor(
+        Water_type,
+        levels = levels(dat$Water_type)
+      ),
+      sample_date_f = factor(
+        sample_date_f,
+        levels = levels(dat$sample_date_f)
+      )
+    )
+
+  pred <- predict(
+    model,
+    newdata = newdata,
+    re.form = NA,
+    se.fit = TRUE
+  )
+
+  newdata %>%
+    mutate(
+      estimate_link = as.numeric(pred$fit),
+      se_link = as.numeric(pred$se.fit),
+      conf_low_link =
+        estimate_link - 1.96 * se_link,
+      conf_high_link =
+        estimate_link + 1.96 * se_link,
+      estimate = if (
+        fit$transform == "log"
+      ) {
+        exp(estimate_link)
+      } else {
+        expm1(estimate_link)
+      },
+      conf_low = if (
+        fit$transform == "log"
+      ) {
+        exp(conf_low_link)
+      } else {
+        pmax(expm1(conf_low_link), 0)
+      },
+      conf_high = if (
+        fit$transform == "log"
+      ) {
+        exp(conf_high_link)
+      } else {
+        pmax(expm1(conf_high_link), 0)
+      },
+      compartment = fit$compartment,
+      response = fit$response,
+      erw_form = fit$erw_form,
+      selected_structure =
+        fit$selected_structure,
+      .before = 1
+    )
+}
+
+overall_predictions <- imap_dfr(
+  overall_fits,
+  ~ make_prediction_grid(.x)
+)
+
+overall_predictions
+
+pic_difference <- overall_predictions %>%
+  filter(
+    compartment == "Benthic",
+    response == "PIC_conc",
+    ERW_level %in% c(0, 100)
+  ) %>%
+  select(Water_type, ERW_level, estimate) %>%
+  pivot_wider(
+    names_from = ERW_level,
+    values_from = estimate,
+    names_prefix = "ERW_"
+  ) %>%
+  mutate(
+    delta_PIC = ERW_100 - ERW_0,
+    potential_CO2 = delta_PIC * 44.01 / 12.01
+  )
+
+pic_difference
+
+pic_difference_overall <- pic_difference %>%
+  summarise(
+    delta_PIC = mean(delta_PIC),
+    potential_CO2 = mean(potential_CO2)
+  )
+
+pic_difference_overall
+```
+
+```{r overall-trends}
+overall_erw_slopes <- imap_dfr(
+  overall_fits,
+  function(fit, name) {
+    trend <- emtrends(
+      fit$final_model,
+      specs = ~ Water_type,
+      var = "erw_x"
+    )
+
+    as.data.frame(trend) %>%
+      clean_names() %>%
+      mutate(
+        compartment = fit$compartment,
+        response = fit$response,
+        erw_form = fit$erw_form,
+        selected_structure =
+          fit$selected_structure,
+        .before = 1
+      )
+  }
+)
+
+overall_erw_slopes
+```
+
+```{r water-emmeans}
+water_type_emmeans <- imap_dfr(
+  overall_fits,
+  function(fit, name) {
+    emm <- emmeans(
+      fit$final_model,
+      specs = ~ Water_type
+    )
+
+    as.data.frame(emm) %>%
+      clean_names() %>%
+      mutate(
+        compartment = fit$compartment,
+        response = fit$response,
+        erw_form = fit$erw_form,
+        selected_structure =
+          fit$selected_structure,
+        .before = 1
+      )
+  }
+)
+
+water_type_emmeans
+```
+
+# 12. Daily models
+
+```{r daily-models}
+daily_benthic_poc <- fit_daily_models(
+  benthic_wide,
+  response = "conc_POC",
+  transform = "log",
+  compartment = "Benthic",
+  erw_form = fit_benthic_poc$erw_form
+)
+
+daily_benthic_pic <- fit_daily_models(
+  benthic_wide,
+  response = "PIC_conc",
+  transform = "log1p",
+  compartment = "Benthic",
+  erw_form = fit_benthic_pic$erw_form
+)
+
+daily_pelagic_poc <- fit_daily_models(
+  pelagic_wide,
+  response = "conc_POC",
+  transform = "log",
+  compartment = "Pelagic",
+  erw_form = fit_pelagic_poc$erw_form
+)
+
+daily_pelagic_pic <- fit_daily_models(
+  pelagic_wide,
+  response = "PIC_conc",
+  transform = "log1p",
+  compartment = "Pelagic",
+  erw_form = fit_pelagic_pic$erw_form
+)
+
+all_daily_models <- bind_rows(
+  daily_benthic_poc,
+  daily_benthic_pic,
+  daily_pelagic_poc,
+  daily_pelagic_pic
+)
+```
+
+## 12.1 Daily model outputs
+
+```{r daily-outputs}
+daily_outputs <- extract_daily_outputs(
+  all_daily_models
+)
+
+daily_model_fit <-
+  daily_outputs$model_fit
+
+daily_model_coefficients <-
+  daily_outputs$coefficients
+
+daily_model_term_tests <-
+  daily_outputs$term_tests
+
+daily_erw_coefficients <-
+  daily_outputs$erw_coefficients
+
+daily_model_checks <-
+  daily_outputs$checks
+
+daily_model_fit
+daily_model_term_tests
+daily_erw_coefficients
+daily_model_checks
+```
+
+# 13. Diagnostics
+
+```{r overall-diagnostics-benthic-poc, fig.width=10, fig.height=8}
+check_model(
+  fit_benthic_poc$final_model
+)
+```
+
+```{r overall-diagnostics-benthic-pic, fig.width=10, fig.height=8}
+check_model(
+  fit_benthic_pic$final_model
+)
+```
+
+```{r overall-diagnostics-pelagic-poc, fig.width=10, fig.height=8}
+check_model(
+  fit_pelagic_poc$final_model
+)
+```
+
+```{r overall-diagnostics-pelagic-pic, fig.width=10, fig.height=8}
+check_model(
+  fit_pelagic_pic$final_model
+)
+```
+
+# 14. Export summary tables
+
+```{r build-summary-table}
+particulate_summary <- bind_rows(
+
+  carbon_summary(
+    benthic_wide,
+    "conc_POC"
+  ) %>%
+    mutate(
+      compartment = "Benthic",
+      response = "POC"
+    ),
+
+  carbon_summary(
+    benthic_wide,
+    "PIC_conc"
+  ) %>%
+    mutate(
+      compartment = "Benthic",
+      response = "PIC"
+    ),
+
+  carbon_summary(
+    pelagic_wide,
+    "conc_POC"
+  ) %>%
+    mutate(
+      compartment = "Pelagic",
+      response = "POC"
+    ),
+
+  carbon_summary(
+    pelagic_wide,
+    "PIC_conc"
+  ) %>%
+    mutate(
+      compartment = "Pelagic",
+      response = "PIC"
+    )
+
+) %>%
+  select(
+    compartment,
+    response,
+    sample_date,
+    Water_type,
+    ERW_level,
+    everything()
+  ) %>%
+  arrange(
+    compartment,
+    response,
+    sample_date,
+    Water_type,
+    ERW_level
+  )
+
+particulate_summary
+```
+
+# 15. Export results
+
+```{r export-csv}
+write_csv(
+  erw_form_comparison,
+  file.path(OUTPUT_DIR, "particulate_ERW_form_comparison.csv")
+)
+
+write_csv(
+  overall_model_comparison,
+  file.path(OUTPUT_DIR, "particulate_interaction_comparison.csv")
+)
+
+write_csv(
+  particulate_summary,
+  file.path(OUTPUT_DIR, "particulate_summary_mean_sd.csv")
+)
+
+write_csv(
+  overall_type2_tests,
+  file.path(OUTPUT_DIR, "particulate_final_model_type2_tests.csv")
+)
+
+write_csv(
+  overall_fixed_effects,
+  file.path(OUTPUT_DIR, "particulate_final_model_fixed_effects.csv")
+)
+
+write_csv(
+  overall_erw_slopes,
+  file.path(OUTPUT_DIR, "particulate_overall_ERW_slopes.csv")
+)
+
+write_csv(
+  overall_predictions,
+  file.path(OUTPUT_DIR, "particulate_final_model_predictions.csv")
+)
+
+write_csv(
+  daily_model_term_tests,
+  file.path(OUTPUT_DIR, "particulate_daily_model_term_tests.csv")
+)
+
+write_csv(
+  daily_erw_coefficients,
+  file.path(OUTPUT_DIR, "particulate_daily_ERW_coefficients.csv")
+)
+```
+
+# 17. Session information
+
+```{r session-info}
+sessionInfo()
+```
